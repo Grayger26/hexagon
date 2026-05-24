@@ -13,6 +13,15 @@ config_version=5
 config/name="hexagon"
 config/features=PackedStringArray("4.6", "Forward Plus")
 
+[autoload]
+
+AudioManager="*uid://b4kijwfwhtcjt"
+DataManager="*uid://dyiwot2x55vml"
+EventBus="*uid://d3c3nynrpwwoc"
+GameState="*uid://dmjs4s6o0ruyq"
+SaveManager="*uid://dpjvg3fbxceht"
+SceneManager="*uid://ba11nwu5bjoi0"
+
 [display]
 
 window/size/viewport_width=1920
