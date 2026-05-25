@@ -11,21 +11,24 @@ config_version=5
 [application]
 
 config/name="hexagon"
+run/main_scene="res://scenes/menus/MainMenu.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
+config/main_scene="res://scenes/menus/MainMenu.tscn"
 
 [autoload]
 
-AudioManager="*uid://b4kijwfwhtcjt"
-DataManager="*uid://dyiwot2x55vml"
-EventBus="*uid://d3c3nynrpwwoc"
-GameState="*uid://dmjs4s6o0ruyq"
-SaveManager="*uid://dpjvg3fbxceht"
-SceneManager="*uid://ba11nwu5bjoi0"
+AudioManager="*res://autoloads/AudioManager.gd"
+DataManager="*res://autoloads/DataManager.gd"
+EventBus="*res://autoloads/EventBus.gd"
+GameState="*res://autoloads/GameState.gd"
+SaveManager="*res://autoloads/SaveManager.gd"
+SceneManager="*res://autoloads/SceneManager.gd"
 
 [display]
 
 window/size/viewport_width=1920
 window/size/viewport_height=1080
+window/size/mode=3
 window/stretch/mode="canvas_items"
 
 [physics]
