@@ -1,53 +1,48 @@
 ## CombatTileMap.gd
-## Manages three TileMapLayer children for the combat hex grid.
-## Parent type: Node2D.
+## Three TileMapLayer children on a Node2D parent.
+## PNG atlas is 96×64 (3 cols × 2 rows, 32×32 per tile):
+##   (0,0) green           — grass terrain
+##   (1,0) orange          — unused (kept for future use)
+##   (2,0) semi-transparent— movement range overlay  ← TILE_HL_MOVE
+##   (0,1) red             — attack highlight + obstacle
+##   (1,1) blue            — cursor hover / spell target
+##   (2,1) pink            — unused (removed from gameplay use)
 ##
-## Layers (children, created in _ready if absent):
-##   TerrainLayer   (z=0) — base grass/obstacle tiles
-##   HighlightLayer (z=1) — move/attack/spell/path overlays
-##   CursorLayer    (z=2) — single-hex hover glow
-##
-## Tileset is built from the PNG at TILE_TEXTURE_PATH (4 tiles, 2×2 layout, 32×32 each).
-## Atlas layout:
-##   (0,0) = tile 0 — green  — grass / normal terrain
-##   (1,0) = tile 1 — orange — highlight move
-##   (0,1) = tile 2 — red    — highlight attack / obstacle
-##   (1,1) = tile 3 — blue   — cursor / spell highlight
+## THREE LAYERS:
+##   TerrainLayer   z=0  permanent: grass + obstacles
+##   HighlightLayer z=1  per-turn: movement/attack/spell — cleared each turn
+##   CursorLayer    z=2  per-frame: single-hex hover glow — never cleared by highlights
 class_name CombatTileMap
 extends Node2D
 
 
 # ── ATLAS COORDS ──────────────────────────────────────────────────────────────
-const SRC: int = 0   ## TileSet source id
+const SRC: int = 0
 
-## Terrain
 const TILE_GRASS:     Vector2i = Vector2i(0, 0)   ## green
-const TILE_OBSTACLE:  Vector2i = Vector2i(0, 1)   ## red  (reusing red for rocks)
+const TILE_OBSTACLE:  Vector2i = Vector2i(0, 1)   ## red
 
-## Highlights — drawn on HighlightLayer on top of terrain
-const TILE_HL_MOVE:   Vector2i = Vector2i(1, 0)   ## orange — reachable
-const TILE_HL_ATTACK: Vector2i = Vector2i(0, 1)   ## red    — attackable
-const TILE_HL_SPELL:  Vector2i = Vector2i(1, 1)   ## blue   — spell target
-const TILE_HL_PATH:   Vector2i = Vector2i(1, 1)   ## blue   — path preview (same as spell for now)
+const TILE_HL_MOVE:   Vector2i = Vector2i(2, 0)   ## semi-transparent — reachable hexes
+const TILE_HL_ATTACK: Vector2i = Vector2i(0, 1)   ## red              — attackable
+const TILE_HL_SPELL:  Vector2i = Vector2i(1, 1)   ## blue             — spell target
 
-## Cursor
-const TILE_CURSOR:    Vector2i = Vector2i(1, 1)   ## blue glow on hover
+## Path preview removed — movement overlay alone is sufficient.
+## highlight_path() is kept as a no-op so callers don't error.
+
+const TILE_CURSOR:    Vector2i = Vector2i(1, 1)   ## blue — hover glow
 
 const TILE_TEXTURE_PATH: String = "res://assets/tilemaps/hex_tiles.png"
-const TILE_SIZE: int = 32   ## each tile cell in the atlas PNG is 32×32 pixels
+const TILE_SIZE: int = 32
 
 
-# ── LAYER REFERENCES ──────────────────────────────────────────────────────────
+# ── LAYERS ────────────────────────────────────────────────────────────────────
 var terrain_layer:   TileMapLayer
 var highlight_layer: TileMapLayer
 var cursor_layer:    TileMapLayer
 
 var obstacle_hexes: Array[Vector3i] = []
-
 var _shared_tileset: TileSet
 
-
-# ── SETUP ─────────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
 	_shared_tileset = _build_tileset()
@@ -59,16 +54,12 @@ func _ready() -> void:
 func _get_or_make_layer(node_name: String, z_idx: int) -> TileMapLayer:
 	var existing: Node = get_node_or_null(node_name)
 	if existing is TileMapLayer:
-		var existing_layer := existing as TileMapLayer
-		existing_layer.tile_set = _shared_tileset
-		return existing_layer
+		(existing as TileMapLayer).tile_set = _shared_tileset
+		return existing as TileMapLayer
 	var layer := TileMapLayer.new()
 	layer.name     = node_name
 	layer.tile_set = _shared_tileset
 	layer.z_index  = z_idx
-	## Highlight and cursor layers need to be visible but not receive mouse events
-	## (TileMapLayer does not extend Control, so no mouse_filter property exists —
-	##  mouse picking is handled entirely in CombatScene._unhandled_input).
 	add_child(layer)
 	return layer
 
@@ -77,6 +68,8 @@ func _get_or_make_layer(node_name: String, z_idx: int) -> TileMapLayer:
 
 func build_grid(obstacle_count: int = 6, rng: RandomNumberGenerator = null) -> void:
 	terrain_layer.clear()
+	highlight_layer.clear()
+	cursor_layer.clear()
 	obstacle_hexes.clear()
 
 	for col: int in range(HexGrid.COLS):
@@ -116,18 +109,16 @@ func highlight_attack(hexes: Array[Vector3i]) -> void:
 func highlight_spell(hexes: Array[Vector3i]) -> void:
 	_paint(highlight_layer, hexes, TILE_HL_SPELL)
 
-func highlight_path(hexes: Array[Vector3i]) -> void:
-	for cell: Vector2i in highlight_layer.get_used_cells():
-		if highlight_layer.get_cell_atlas_coords(cell) == TILE_HL_PATH:
-			highlight_layer.erase_cell(cell)
-	_paint(highlight_layer, hexes, TILE_HL_PATH)
+## No-op — path preview removed. Keeping signature so call sites compile.
+func highlight_path(_hexes: Array[Vector3i]) -> void:
+	pass
 
 func _paint(layer: TileMapLayer, hexes: Array[Vector3i], tile: Vector2i) -> void:
 	for hex: Vector3i in hexes:
 		layer.set_cell(HexGrid.cube_to_offset(hex), SRC, tile)
 
 
-# ── CURSOR ────────────────────────────────────────────────────────────────────
+# ── CURSOR  (isolated layer — never affects HighlightLayer) ──────────────────
 
 func set_cursor(hex: Vector3i) -> void:
 	cursor_layer.clear()
@@ -140,18 +131,15 @@ func clear_cursor() -> void:
 
 # ── COORDINATE HELPERS ────────────────────────────────────────────────────────
 
-## Local pixel pos → cube hex. Uses HexGrid math tuned to 32×32 STAIRS_RIGHT.
 func local_pos_to_hex(local_pos: Vector2) -> Vector3i:
-	## TileMapLayer.local_to_map handles the offset-coord conversion exactly.
 	var offset: Vector2i = terrain_layer.local_to_map(local_pos)
 	return HexGrid.offset_to_cube(offset.x, offset.y)
 
-## Cube hex → pixel centre in this Node2D's local space.
 func hex_to_local(hex: Vector3i) -> Vector2:
 	return terrain_layer.map_to_local(HexGrid.cube_to_offset(hex))
 
 
-# ── TILESET BUILDER ───────────────────────────────────────────────────────────
+# ── TILESET ───────────────────────────────────────────────────────────────────
 
 func _build_tileset() -> TileSet:
 	var ts := TileSet.new()
@@ -161,42 +149,37 @@ func _build_tileset() -> TileSet:
 	ts.tile_size        = Vector2i(TILE_SIZE, TILE_SIZE)
 
 	var source := TileSetAtlasSource.new()
-
-	## Load the real PNG if it exists, otherwise generate coloured placeholders.
 	if ResourceLoader.exists(TILE_TEXTURE_PATH):
 		source.texture = load(TILE_TEXTURE_PATH) as Texture2D
 	else:
-		push_warning("[CombatTileMap] Tile texture not found at %s — using fallback colours." \
-			% TILE_TEXTURE_PATH)
+		push_warning("[CombatTileMap] %s not found — using fallback." % TILE_TEXTURE_PATH)
 		source.texture = _make_fallback_texture()
-
 	source.texture_region_size = Vector2i(TILE_SIZE, TILE_SIZE)
 
-	## Register the four tiles that exist in the 2×2 atlas layout.
-	for coord: Vector2i in [Vector2i(0,0), Vector2i(1,0), Vector2i(0,1), Vector2i(1,1)]:
-		source.create_tile(coord)
+	## All 6 tiles in the 3×2 atlas
+	for col: int in range(3):
+		for row: int in range(2):
+			source.create_tile(Vector2i(col, row))
 
 	ts.add_source(source, SRC)
 	return ts
 
 
-## Generates a 64×64 RGBA image with four solid-colour hex-shaped tiles
-## (matching the 2×2 layout of the real PNG) as a fallback.
 func _make_fallback_texture() -> ImageTexture:
-	var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
-	var tile_colours: Array[Color] = [
-		Color(0.22, 0.55, 0.20),   ## (0,0) green  — grass
-		Color(1.00, 0.64, 0.00),   ## (1,0) orange — move highlight
-		Color(0.75, 0.15, 0.15),   ## (0,1) red    — attack / obstacle
-		Color(0.10, 0.55, 0.85),   ## (1,1) blue   — cursor / spell
+	var img := Image.create(96, 64, false, Image.FORMAT_RGBA8)
+	var tiles: Array = [
+		[Vector2i(0,0), Color(0.22, 0.55, 0.20, 1.00)],
+		[Vector2i(1,0), Color(1.00, 0.64, 0.00, 1.00)],
+		[Vector2i(2,0), Color(0.20, 0.70, 0.20, 0.50)],
+		[Vector2i(0,1), Color(0.75, 0.15, 0.15, 1.00)],
+		[Vector2i(1,1), Color(0.10, 0.55, 0.85, 1.00)],
+		[Vector2i(2,1), Color(0.90, 0.40, 0.70, 1.00)],
 	]
-	var positions: Array[Vector2i] = [
-		Vector2i(0, 0), Vector2i(32, 0), Vector2i(0, 32), Vector2i(32, 32)
-	]
-	for i: int in range(4):
-		var origin: Vector2i = positions[i]
-		var col: Color       = tile_colours[i]
-		for py: int in range(32):
-			for px: int in range(32):
-				img.set_pixel(origin.x + px, origin.y + py, col)
+	for entry: Variant in tiles:
+		var arr: Array      = entry as Array
+		var coord: Vector2i = arr[0] as Vector2i
+		var col: Color      = arr[1] as Color
+		for py: int in range(TILE_SIZE):
+			for px: int in range(TILE_SIZE):
+				img.set_pixel(coord.x * TILE_SIZE + px, coord.y * TILE_SIZE + py, col)
 	return ImageTexture.create_from_image(img)

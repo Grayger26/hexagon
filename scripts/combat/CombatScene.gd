@@ -276,13 +276,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_on_click(hovered_hex)
 
 
-func _on_hover(hex: Vector3i) -> void:
-	if phase == CombatPhase.PLAYER_SELECT or phase == CombatPhase.PLAYER_MOVE:
-		# Show path preview to hovered reachable hex
-		if hex in _reachable_hexes:
-			var blocked: Array[Vector3i] = _get_blocked_hexes(active_stack)
-			var path: Array[Vector3i]    = HexGrid.find_path(active_stack.hex, hex, blocked)
-			tilemap.highlight_path(path)
+func _on_hover(_hex: Vector3i) -> void:
+	## Path preview removed — movement overlay is sufficient.
+	## Cursor glow is handled by set_cursor() in _unhandled_input.
+	pass
 
 
 func _on_click(hex: Vector3i) -> void:
@@ -309,12 +306,21 @@ func _on_click(hex: Vector3i) -> void:
 				_action_move(hex)
 
 
+## Internal helper: moves `stack` to `target_hex` silently (no phase change,
+## no highlight update). Used by _try_attack for auto-move-then-attack.
+func _move_stack_to(stack: UnitStack, target_hex: Vector3i) -> void:
+	var old_hex: Vector3i = stack.hex
+	stack.hex      = target_hex
+	stack.position = tilemap.hex_to_local(target_hex)
+	_update_hex_map_for(stack, old_hex)
+	EventBus.unit_moved.emit(stack.stack_id, old_hex, target_hex)
+	_log("%s moves to attack." % stack.unit_data.unit_name)
+
+
+## Player explicitly clicked an empty hex — move there and show attack options.
 func _action_move(target_hex: Vector3i) -> void:
 	phase = CombatPhase.PLAYER_MOVE
 	var old_hex: Vector3i = active_stack.hex
-
-	var blocked: Array[Vector3i] = _get_blocked_hexes(active_stack)
-	var path: Array[Vector3i]    = HexGrid.find_path(old_hex, target_hex, blocked)
 
 	active_stack.hex      = target_hex
 	active_stack.position = tilemap.hex_to_local(target_hex)
@@ -325,29 +331,61 @@ func _action_move(target_hex: Vector3i) -> void:
 
 	tilemap.clear_highlights()
 	tilemap.clear_cursor()
-
-	# After moving, show attackable enemies from new position
 	_show_attackable(active_stack)
 	phase = CombatPhase.PLAYER_ATTACK
 
 
 func _try_attack(target: UnitStack) -> void:
-	var can_attack: bool = false
+	## HoMM3 attack flow:
+	## 1. Ranged unit: shoot from current hex (full damage).
+	##    Exception: if an enemy is adjacent to the shooter, it must melee-attack
+	##    that enemy instead (half damage = ranged_penalty applied).
+	## 2. Melee unit: auto-move to the nearest free hex adjacent to the target,
+	##    then attack. Move is only possible if that hex is within movement range.
 
-	if active_stack.unit_data.is_ranged and active_stack.ammo_remaining > 0:
-		can_attack = true
-	elif _is_adjacent(active_stack.hex, target.hex):
-		can_attack = true
-	else:
-		# Need to move adjacent first — find nearest free hex beside target
-		var adj_free: Vector3i = _nearest_free_adjacent(active_stack.hex, target)
-		if adj_free != Vector3i.ZERO and adj_free in _reachable_hexes:
-			_action_move(adj_free)
-			can_attack = _is_adjacent(active_stack.hex, target.hex)
+	var is_ranged: bool = active_stack.unit_data.is_ranged \
+		and active_stack.ammo_remaining > 0
 
-	if can_attack:
+	## Check whether any enemy is already adjacent to this stack (blocks ranged).
+	var enemy_adjacent: bool = false
+	for s: UnitStack in (defender_stacks if active_stack.side == 0 else attacker_stacks):
+		if not s.is_dead() and _is_adjacent(active_stack.hex, s.hex):
+			enemy_adjacent = true
+			break
+
+	if is_ranged and not enemy_adjacent:
+		## Pure ranged shot — no movement needed.
 		_perform_attack(active_stack, target)
 		_finish_player_turn()
+		return
+
+	if is_ranged and enemy_adjacent:
+		## Forced melee: ranged unit attacked while enemy is adjacent.
+		## Only legal if the target IS the adjacent enemy.
+		if _is_adjacent(active_stack.hex, target.hex):
+			_perform_attack(active_stack, target)   ## ranged_penalty detected in _perform_attack
+			_finish_player_turn()
+		return
+
+	## Melee path: auto-move to an adjacent hex, then strike.
+	if _is_adjacent(active_stack.hex, target.hex):
+		## Already adjacent — attack immediately.
+		_perform_attack(active_stack, target)
+		_finish_player_turn()
+		return
+
+	## Find the best free adjacent hex reachable this turn.
+	var adj_free: Vector3i = _nearest_free_adjacent_in_range(active_stack, target)
+	if adj_free == Vector3i.ZERO:
+		## Target unreachable this turn — do nothing (player must move manually first).
+		_log("%s can't reach %s this turn." % [
+			active_stack.unit_data.unit_name, target.unit_data.unit_name])
+		return
+
+	## Silently move to the adjacent hex then attack.
+	_move_stack_to(active_stack, adj_free)
+	_perform_attack(active_stack, target)
+	_finish_player_turn()
 
 
 func _action_wait() -> void:
@@ -629,6 +667,25 @@ func _is_adjacent(a: Vector3i, b: Vector3i) -> bool:
 	return HexGrid.hex_distance(a, b) == 1
 
 
+## Returns the nearest hex adjacent to `target` that is free AND within
+## `stack`'s current movement range. Returns Vector3i.ZERO if none found.
+func _nearest_free_adjacent_in_range(stack: UnitStack, target: UnitStack) -> Vector3i:
+	var blocked: Array[Vector3i] = _get_blocked_hexes(stack)
+	var reachable: Array[Vector3i] = HexGrid.get_reachable(
+		stack.hex, stack.movement_left, blocked)
+	var best: Vector3i = Vector3i.ZERO
+	var best_dist: int = 9999
+	for nb: Vector3i in HexGrid.get_neighbours(target.hex):
+		if not HexGrid.is_in_bounds(nb): continue
+		if nb in blocked: continue
+		if nb not in reachable: continue
+		var d: int = HexGrid.hex_distance(stack.hex, nb)
+		if d < best_dist:
+			best_dist = d
+			best = nb
+	return best
+
+
 func _nearest_free_adjacent(from_hex: Vector3i, target: UnitStack) -> Vector3i:
 	var blocked: Array[Vector3i] = _get_blocked_hexes(null)
 	var best: Vector3i   = Vector3i.ZERO
@@ -744,13 +801,13 @@ func _load_test_battle() -> void:
 	# Hardcoded test armies so the scene works without any .tres files.
 	# Two manually created UnitData instances — replace with real .tres once available.
 	var swordsman := _make_test_unit("swordsman",  "Swordsman",  "castle",
-		7, 7, 3, 7, 25, 4, 5)
+		7, 7, 3, 7, 25, 4, 5,  false, "res://assets/sprites/swordman.png")
 	var archer    := _make_test_unit("archer",     "Archer",     "castle",
-		6, 3, 2, 4, 10, 4, 4, true)
+		6, 3, 2, 4, 10, 4, 4,  true,  "res://assets/sprites/archer.png")
 	var goblin    := _make_test_unit("goblin",     "Goblin",     "stronghold",
-		4, 2, 1, 2,  5, 5, 3)
+		4, 2, 1, 2,  5, 5, 3,  false, "res://assets/sprites/enemy_swordman.png")
 	var wolf      := _make_test_unit("wolf_rider", "Wolf Rider", "stronghold",
-		5, 4, 2, 5, 20, 6, 5)
+		5, 4, 2, 5, 20, 6, 5,  false, "res://assets/sprites/enemy_archer.png")
 
 	var att_army: Array = [
 		{"unit_id": "swordsman", "count": 20},
@@ -773,7 +830,8 @@ func _load_test_battle() -> void:
 func _make_test_unit(id: String, name: String, faction: String,
 		atk: int, def: int, min_d: int, max_d: int, hp: int,
 		spd: int, mov: int,
-		ranged: bool = false) -> UnitData:
+		ranged: bool = false,
+		sprite_path: String = "") -> UnitData:
 	var d := UnitData.new()
 	d.id        = id
 	d.unit_name = name
@@ -787,4 +845,6 @@ func _make_test_unit(id: String, name: String, faction: String,
 	d.movement  = mov
 	d.is_ranged = ranged
 	d.ammo      = 12 if ranged else 0
+	if sprite_path != "" and ResourceLoader.exists(sprite_path):
+		d.sprite_idle = load(sprite_path) as Texture2D
 	return d

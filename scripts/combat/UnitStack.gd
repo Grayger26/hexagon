@@ -247,7 +247,7 @@ func _build_visuals() -> void:
 
 	# Unit sprite
 	_sprite = Sprite2D.new()
-	_sprite.scale = Vector2(0.55, 0.55)
+	_sprite.scale = Vector2(1.0, 1.0)
 	add_child(_sprite)
 
 	# HP bar background
