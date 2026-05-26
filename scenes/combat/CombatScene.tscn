@@ -11,7 +11,8 @@ position = Vector2(8, 110)
 scale = Vector2(2.5, 2.5)
 script = ExtResource("2")
 
-[node name="UnitLayer" type="Node2D" parent="." unique_id=1950393296]
+[node name="UnitLayer" type="Node2D" parent="CombatTileMap" unique_id=1950393296]
+z_index = 5
 
 [node name="UILayer" type="CanvasLayer" parent="." unique_id=1720849340]
 

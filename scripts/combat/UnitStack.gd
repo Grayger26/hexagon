@@ -46,8 +46,6 @@ var hex: Vector3i = Vector3i.ZERO   ## current cube position on the grid
 # ─────────────────────────────────────────────
 var _sprite:     Sprite2D
 var _count_label: Label
-var _hp_bar:     ColorRect
-var _hp_bar_bg:  ColorRect
 var _selected_ring: Node2D   ## highlight drawn around this unit when selected
 
 
@@ -238,40 +236,27 @@ func set_selected(selected: bool) -> void:
 # ─────────────────────────────────────────────
 
 func _build_visuals() -> void:
-	# Background circle (faction colour coded)
-	var bg := ColorRect.new()
-	bg.size     = Vector2(36, 36)
-	bg.position = Vector2(-18, -18)
-	bg.color    = Color(0.1, 0.1, 0.2, 0.85)
-	add_child(bg)
-
-	# Unit sprite
+	# Sprite — fills the 32×32 tile exactly, no background box.
+	# Centred on the node origin (Sprite2D default is centred).
 	_sprite = Sprite2D.new()
 	_sprite.scale = Vector2(1.0, 1.0)
 	add_child(_sprite)
 
-	# HP bar background
-	_hp_bar_bg = ColorRect.new()
-	_hp_bar_bg.size     = Vector2(34, 4)
-	_hp_bar_bg.position = Vector2(-17, 14)
-	_hp_bar_bg.color    = Color(0.15, 0.0, 0.0)
-	add_child(_hp_bar_bg)
+	# Small count badge — dark pill at bottom-right, showing stack size.
+	# Sized in tile-local coords (tile = 32px), small enough not to obscure the sprite.
+	var badge_bg := ColorRect.new()
+	badge_bg.size     = Vector2(14, 10)
+	badge_bg.position = Vector2(4, 7)
+	badge_bg.color    = Color(0.0, 0.0, 0.0, 0.72)
+	add_child(badge_bg)
 
-	# HP bar fill
-	_hp_bar = ColorRect.new()
-	_hp_bar.size     = Vector2(34, 4)
-	_hp_bar.position = Vector2(-17, 14)
-	_hp_bar.color    = Color(0.1, 0.85, 0.1)
-	add_child(_hp_bar)
-
-	# Count label (bottom-right corner)
 	_count_label = Label.new()
-	_count_label.position    = Vector2(6, 6)
-	_count_label.add_theme_font_size_override("font_size", 11)
+	_count_label.position = Vector2(4, 5)
+	_count_label.size     = Vector2(14, 10)
+	_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_count_label.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	_count_label.add_theme_font_size_override("font_size", 8)
 	_count_label.add_theme_color_override("font_color", Color.WHITE)
-	_count_label.add_theme_color_override("font_shadow_color", Color.BLACK)
-	_count_label.add_theme_constant_override("shadow_offset_x", 1)
-	_count_label.add_theme_constant_override("shadow_offset_y", 1)
 	add_child(_count_label)
 
 	# Selection ring
@@ -292,26 +277,14 @@ func _make_selection_ring() -> Node2D:
 func _refresh_visuals() -> void:
 	if not is_inside_tree():
 		return
-
-	# Sprite
 	if _sprite and unit_data:
 		_sprite.texture = unit_data.sprite_idle
-
-	# Tint dead stacks grey
 	if is_dead():
 		modulate = Color(0.4, 0.4, 0.4, 0.5)
 		return
 	modulate = Color.WHITE
-
-	# Stack count label
 	if _count_label:
 		_count_label.text = str(count)
-
-	# HP bar
-	if _hp_bar and unit_data and count > 0:
-		var ratio: float = float(total_hp()) / float(max_total_hp())
-		_hp_bar.size.x   = 34.0 * ratio
-		_hp_bar.color    = _hp_color(ratio)
 
 
 func _hp_color(ratio: float) -> Color:

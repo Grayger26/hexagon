@@ -144,8 +144,8 @@ func hex_to_local(hex: Vector3i) -> Vector2:
 func _build_tileset() -> TileSet:
 	var ts := TileSet.new()
 	ts.tile_shape       = TileSet.TILE_SHAPE_HEXAGON
-	ts.tile_layout      = TileSet.TILE_LAYOUT_STAIRS_RIGHT
-	ts.tile_offset_axis = TileSet.TILE_OFFSET_AXIS_HORIZONTAL   ## flat-top
+	ts.tile_layout      = TileSet.TILE_LAYOUT_STACKED
+	ts.tile_offset_axis = TileSet.TILE_OFFSET_AXIS_VERTICAL   ## pointy-top
 	ts.tile_size        = Vector2i(TILE_SIZE, TILE_SIZE)
 
 	var source := TileSetAtlasSource.new()

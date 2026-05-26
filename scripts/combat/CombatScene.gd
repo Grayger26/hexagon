@@ -19,7 +19,7 @@ extends Node2D
 #  CHILD NODE PATHS  (set in the .tscn)
 # ─────────────────────────────────────────────
 @onready var tilemap:       CombatTileMap  = $CombatTileMap
-@onready var unit_layer:    Node2D         = $UnitLayer
+@onready var unit_layer:    Node2D         = $CombatTileMap/UnitLayer
 @onready var ui_layer:      CanvasLayer    = $UILayer
 @onready var turn_bar:      HBoxContainer  = $UILayer/TurnOrderBar
 @onready var combat_log:    RichTextLabel  = $UILayer/CombatLog
