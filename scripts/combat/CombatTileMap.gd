@@ -22,33 +22,40 @@ const SRC: int = 0
 const TILE_GRASS:     Vector2i = Vector2i(0, 0)   ## green
 const TILE_OBSTACLE:  Vector2i = Vector2i(0, 1)   ## red
 
-const TILE_HL_MOVE:   Vector2i = Vector2i(2, 0)   ## semi-transparent — reachable hexes
-const TILE_HL_ATTACK: Vector2i = Vector2i(0, 1)   ## red              — attackable
-const TILE_HL_SPELL:  Vector2i = Vector2i(1, 1)   ## blue             — spell target
+const TILE_HL_MOVE:         Vector2i = Vector2i(2, 0)   ## semi-transparent — reachable hexes
+const TILE_HL_ATTACK:       Vector2i = Vector2i(0, 1)   ## red              — attackable
+const TILE_HL_SPELL:        Vector2i = Vector2i(1, 1)   ## blue             — spell target
+const TILE_HL_ATTACK_POS:  Vector2i = Vector2i(2, 0)   ## semi-transparent green — dim ghost for available attack positions
 
 ## Path preview removed — movement overlay alone is sufficient.
 ## highlight_path() is kept as a no-op so callers don't error.
 
-const TILE_CURSOR:    Vector2i = Vector2i(1, 1)   ## blue — hover glow
+const TILE_CURSOR:          Vector2i = Vector2i(1, 1)   ## blue — hover glow
+const TILE_CURSOR_CHOSEN:   Vector2i = Vector2i(0, 1)   ## red  — chosen attack hex (clearly distinct from ghost positions)
 
 const TILE_TEXTURE_PATH: String = "res://assets/tilemaps/hex_tiles.png"
 const TILE_SIZE: int = 32
 
 
 # ── LAYERS ────────────────────────────────────────────────────────────────────
-var terrain_layer:   TileMapLayer
-var highlight_layer: TileMapLayer
-var cursor_layer:    TileMapLayer
+
+var terrain_layer:    TileMapLayer
+var highlight_layer:  TileMapLayer
+var cursor_layer:     TileMapLayer
+## Extra layer drawn above cursor for the HoMM3 attack-position picker.
+## Shows available attack hexes (blue) around a hovered enemy.
+var attack_pos_layer: TileMapLayer
 
 var obstacle_hexes: Array[Vector3i] = []
 var _shared_tileset: TileSet
 
 
 func _ready() -> void:
-	_shared_tileset = _build_tileset()
-	terrain_layer   = _get_or_make_layer("TerrainLayer",   0)
-	highlight_layer = _get_or_make_layer("HighlightLayer", 1)
-	cursor_layer    = _get_or_make_layer("CursorLayer",    2)
+	_shared_tileset  = _build_tileset()
+	terrain_layer    = _get_or_make_layer("TerrainLayer",   0)
+	highlight_layer  = _get_or_make_layer("HighlightLayer", 1)
+	cursor_layer     = _get_or_make_layer("CursorLayer",    2)
+	attack_pos_layer = _get_or_make_layer("AttackPosLayer", 3)
 
 
 func _get_or_make_layer(node_name: String, z_idx: int) -> TileMapLayer:
@@ -113,6 +120,27 @@ func highlight_spell(hexes: Array[Vector3i]) -> void:
 func highlight_path(_hexes: Array[Vector3i]) -> void:
 	pass
 
+## HoMM3 attack-position picker:
+## - All available attack hexes are shown as dim semi-transparent ghosts on
+##   attack_pos_layer so the player can see where options exist as the mouse moves.
+## - Only the chosen hex (sector the mouse is currently pointing toward) is
+##   highlighted brightly in red on the cursor layer, giving unambiguous feedback
+##   about where the unit will actually move and attack from.
+func show_attack_positions(available: Array[Vector3i], chosen: Vector3i) -> void:
+	attack_pos_layer.clear()
+	cursor_layer.clear()
+	## Dim ghost for all non-chosen available positions
+	for hex: Vector3i in available:
+		if hex != chosen:
+			attack_pos_layer.set_cell(HexGrid.cube_to_offset(hex), SRC, TILE_HL_ATTACK_POS)
+	## Chosen hex: bright red highlight on cursor layer (sits above everything)
+	if chosen != Vector3i.ZERO and HexGrid.is_in_bounds(chosen):
+		cursor_layer.set_cell(HexGrid.cube_to_offset(chosen), SRC, TILE_CURSOR_CHOSEN)
+
+func clear_attack_positions() -> void:
+	attack_pos_layer.clear()
+	cursor_layer.clear()
+
 func _paint(layer: TileMapLayer, hexes: Array[Vector3i], tile: Vector2i) -> void:
 	for hex: Vector3i in hexes:
 		layer.set_cell(HexGrid.cube_to_offset(hex), SRC, tile)
@@ -145,7 +173,7 @@ func _build_tileset() -> TileSet:
 	var ts := TileSet.new()
 	ts.tile_shape       = TileSet.TILE_SHAPE_HEXAGON
 	ts.tile_layout      = TileSet.TILE_LAYOUT_STACKED
-	ts.tile_offset_axis = TileSet.TILE_OFFSET_AXIS_VERTICAL   ## pointy-top
+	ts.tile_offset_axis = TileSet.TILE_OFFSET_AXIS_HORIZONTAL   ## pointy-top
 	ts.tile_size        = Vector2i(TILE_SIZE, TILE_SIZE)
 
 	var source := TileSetAtlasSource.new()

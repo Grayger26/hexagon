@@ -22,7 +22,7 @@ var slot_index: int    = 0      ## 0–6 slot in the hero's army
 # ─────────────────────────────────────────────
 var count:          int = 0     ## living creatures in the stack
 var hp_top:         int = 0     ## HP of the "top" creature (takes damage first)
-                                ## remaining creatures all have full HP
+								## remaining creatures all have full HP
 
 var has_acted:      bool = false   ## used this turn
 var has_retaliated: bool = false   ## has used its one free retaliation this round
@@ -55,6 +55,7 @@ var _selected_ring: Node2D   ## highlight drawn around this unit when selected
 
 func _ready() -> void:
 	_build_visuals()
+	_refresh_visuals()
 
 
 ## Initialise from a UnitData blueprint + starting count.

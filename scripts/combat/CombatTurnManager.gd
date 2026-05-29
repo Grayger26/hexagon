@@ -41,22 +41,19 @@ func current_stack() -> UnitStack:
 ## Call after the active stack has finished its action.
 ## Handles Wait stacks being appended to the end.
 func advance() -> void:
-	if _queue.is_empty():
-		return
+	## Called when a stack finishes its action. Also called by CombatScene
+	## with an empty queue to flush waited stacks or trigger end-of-round.
+	if not _queue.is_empty():
+		var acted: UnitStack = _queue.pop_front()
+		acted.has_acted = true
+		if acted.has_waited:
+			acted.has_waited = false
+		_clean_dead()
 
-	var acted: UnitStack = _queue.pop_front()
-	acted.has_acted = true
-
-	# If this was a waited stack now acting, clear its wait flag
-	if acted.has_waited:
-		acted.has_waited = false
-
-	_clean_dead()
-
-	# If main queue is empty, flush wait_queue then start new round
+	## Whether we just popped a stack or were called with an empty queue,
+	## check if we need to flush waited stacks or start a new round.
 	if _queue.is_empty():
 		if not _wait_queue.is_empty():
-			# Waited stacks act in their original speed order at end of round
 			_queue = _wait_queue.duplicate()
 			_wait_queue.clear()
 		else:

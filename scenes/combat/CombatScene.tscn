@@ -28,6 +28,7 @@ offset_left = 8.0
 offset_top = 520.0
 offset_right = 340.0
 offset_bottom = 1060.0
+mouse_filter = 2
 bbcode_enabled = true
 scroll_following = true
 
@@ -47,11 +48,14 @@ anchor_left = 1.0
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = -220.0
-offset_top = -52.0
-offset_right = -8.0
-offset_bottom = -8.0
-text = "End Turn  (W=Wait  D=Defend)"
+offset_left = -250.0
+offset_top = -53.0
+offset_right = -9.0
+offset_bottom = -9.0
+grow_horizontal = 0
+grow_vertical = 0
+text = "End Turn
+(W=Wait  D=Defend)"
 
 [node name="ResultPanel" type="PanelContainer" parent="UILayer" unique_id=1774792997]
 visible = false

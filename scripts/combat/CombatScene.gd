@@ -15,6 +15,13 @@
 extends Node2D
 
 
+const CURSOR_BASIC := "res://assets/cursors/basic_cursor.png"
+const CURSOR_MELEE := "res://assets/cursors/melee_cursor.png"
+const CURSOR_RANGE := "res://assets/cursors/range_cursor.png"
+
+var _cursor_basic: Texture2D
+var _cursor_melee: Texture2D
+var _cursor_range: Texture2D
 # ─────────────────────────────────────────────
 #  CHILD NODE PATHS  (set in the .tscn)
 # ─────────────────────────────────────────────
@@ -64,8 +71,14 @@ var rng: RandomNumberGenerator      = RandomNumberGenerator.new()
 var active_stack: UnitStack = null
 
 ## Hexes highlighted for the current action
-var _reachable_hexes: Array[Vector3i] = []
+var _reachable_hexes:   Array[Vector3i] = []
 var _attackable_stacks: Array[UnitStack] = []
+
+## HoMM3 attack-direction picker state.
+## Set while hovering over an enemy with a melee unit.
+var _hovered_enemy:     UnitStack = null          ## enemy currently being hovered
+var _attack_positions:  Array[Vector3i] = []      ## available attack hexes around that enemy
+var _chosen_attack_hex: Vector3i = Vector3i.ZERO  ## the one selected by mouse angle
 
 ## Maps hex (Vector3i) → UnitStack for fast lookup
 var _hex_to_stack: Dictionary = {}
@@ -108,6 +121,12 @@ func _ready() -> void:
 	# If opened directly from the editor (no _on_scene_entered call yet)
 	if phase == CombatPhase.SETUP and all_stacks.is_empty():
 		_on_scene_entered({})
+	
+	_cursor_basic = load(CURSOR_BASIC)
+	_cursor_melee = load(CURSOR_MELEE)
+	_cursor_range = load(CURSOR_RANGE)
+
+	_set_basic_cursor()
 
 
 # ─────────────────────────────────────────────
@@ -179,9 +198,18 @@ func _update_hex_map_for(stack: UnitStack, old_hex: Vector3i) -> void:
 # ─────────────────────────────────────────────
 
 func _start_next_turn() -> void:
+	## Abort immediately if combat has already ended.
+	if phase == CombatPhase.COMBAT_OVER:
+		return
 	active_stack = turn_manager.current_stack()
 	if active_stack == null:
-		return
+		## Queue is empty mid-round — this shouldn't normally happen,
+		## but can occur if every remaining stack used Wait in the same round.
+		## Calling advance() with an empty queue triggers _end_round() safely.
+		turn_manager.advance()
+		active_stack = turn_manager.current_stack()
+		if active_stack == null:
+			return  ## truly no stacks left — combat_over will fire separately
 
 	active_stack.tick_effects()
 	EventBus.unit_turn_started.emit(active_stack.stack_id)
@@ -232,8 +260,12 @@ func _finish_player_turn() -> void:
 	_deselect_all()
 	tilemap.clear_highlights()
 	tilemap.clear_cursor()
-	EventBus.unit_turn_ended.emit(active_stack.stack_id)
-	turn_manager.advance()
+	_set_basic_cursor()
+	## Guard: active_stack can be null if the stack died during this turn
+	## or if Wait left the queue empty. Only emit/advance if still valid.
+	if active_stack != null and not active_stack.is_dead():
+		EventBus.unit_turn_ended.emit(active_stack.stack_id)
+		turn_manager.advance()
 	_start_next_turn()
 
 
@@ -276,11 +308,95 @@ func _unhandled_input(event: InputEvent) -> void:
 			_on_click(hovered_hex)
 
 
-func _on_hover(_hex: Vector3i) -> void:
-	## Path preview removed — movement overlay is sufficient.
-	## Cursor glow is handled by set_cursor() in _unhandled_input.
-	pass
+func _on_hover(hex: Vector3i) -> void:
+	if active_stack == null:
+		_set_basic_cursor()
+		return
 
+	var hovered_stack: UnitStack = _hex_to_stack.get(hex, null) as UnitStack
+
+	# Not hovering an enemy — clear picker and show normal cursor
+	if hovered_stack == null or hovered_stack.side == active_stack.side:
+		if _hovered_enemy != null:
+			_hovered_enemy = null
+		_attack_positions.clear()
+		_chosen_attack_hex = Vector3i.ZERO
+		tilemap.clear_attack_positions()
+		tilemap.set_cursor(hex)
+		_set_basic_cursor()
+		return
+
+	# --- ranged unit with ammo and no enemy adjacent: pure shot, no position picker ---
+	if active_stack.unit_data.is_ranged and active_stack.ammo_remaining > 0:
+		var enemy_adjacent: bool = false
+		for s: UnitStack in all_stacks:
+			if s.side != active_stack.side \
+			and not s.is_dead() \
+			and _is_adjacent(active_stack.hex, s.hex):
+				enemy_adjacent = true
+				break
+		if not enemy_adjacent:
+			# Pure ranged shot — no position picker needed
+			tilemap.clear_attack_positions()
+			_hovered_enemy = null
+			_attack_positions.clear()
+			_chosen_attack_hex = Vector3i.ZERO
+			tilemap.set_cursor(hex)
+			_set_range_cursor()
+			return
+		# Ranged unit forced into melee (enemy is adjacent to shooter).
+		# Only allow attack on the adjacent enemy; show melee cursor but no picker
+		# if the hovered enemy is not the one blocking.
+		if not _is_adjacent(active_stack.hex, hovered_stack.hex):
+			tilemap.clear_attack_positions()
+			_hovered_enemy = null
+			_attack_positions.clear()
+			_chosen_attack_hex = Vector3i.ZERO
+			tilemap.set_cursor(hex)
+			_set_melee_cursor()
+			return
+
+	# --- melee unit (or forced-melee ranged) ---
+	_set_melee_cursor()
+
+	# Recompute available attack positions when switching to a different enemy
+	if _hovered_enemy != hovered_stack:
+		_hovered_enemy    = hovered_stack
+		_attack_positions = _get_attack_positions_for(active_stack, hovered_stack)
+
+	if _attack_positions.is_empty():
+		# Enemy unreachable — show no picker, just cursor on enemy hex
+		tilemap.clear_attack_positions()
+		_chosen_attack_hex = Vector3i.ZERO
+		tilemap.set_cursor(hex)
+		return
+
+	# Pick the attack hex whose direction from enemy center is closest to mouse direction
+	var mouse_local: Vector2  = tilemap.get_local_mouse_position()
+	var enemy_center: Vector2 = tilemap.hex_to_local(hovered_stack.hex)
+	var mouse_dir: Vector2    = (mouse_local - enemy_center).normalized()
+
+	var best_hex: Vector3i = _attack_positions[0]
+	var best_dot: float    = -2.0
+	for ap: Vector3i in _attack_positions:
+		var ap_center: Vector2 = tilemap.hex_to_local(ap)
+		var ap_dir: Vector2    = (ap_center - enemy_center).normalized()
+		var dot: float         = mouse_dir.dot(ap_dir)
+		if dot > best_dot:
+			best_dot = dot
+			best_hex = ap
+
+	_chosen_attack_hex = best_hex
+	tilemap.show_attack_positions(_attack_positions, _chosen_attack_hex)
+
+func _set_basic_cursor() -> void:
+	Input.set_custom_mouse_cursor(_cursor_basic)
+
+func _set_melee_cursor() -> void:
+	Input.set_custom_mouse_cursor(_cursor_melee)
+
+func _set_range_cursor() -> void:
+	Input.set_custom_mouse_cursor(_cursor_range)
 
 func _on_click(hex: Vector3i) -> void:
 	match phase:
@@ -293,13 +409,13 @@ func _on_click(hex: Vector3i) -> void:
 				return
 
 			# Clicked a friendly → select that stack instead
-			if stack_at_hex != null and stack_at_hex.side == active_stack.side:
-				if stack_at_hex != active_stack and not stack_at_hex.has_acted:
-					_deselect_all()
-					active_stack = stack_at_hex
-					active_stack.set_selected(true)
-					_show_reachable(active_stack)
-				return
+			#if stack_at_hex != null and stack_at_hex.side == active_stack.side:
+				#if stack_at_hex != active_stack and not stack_at_hex.has_acted:
+					#_deselect_all()
+					#active_stack = stack_at_hex
+					#active_stack.set_selected(true)
+					#_show_reachable(active_stack)
+				#return
 
 			# Clicked empty reachable hex → move
 			if hex in _reachable_hexes:
@@ -315,6 +431,7 @@ func _move_stack_to(stack: UnitStack, target_hex: Vector3i) -> void:
 	_update_hex_map_for(stack, old_hex)
 	EventBus.unit_moved.emit(stack.stack_id, old_hex, target_hex)
 	_log("%s moves to attack." % stack.unit_data.unit_name)
+	
 
 
 ## Player explicitly clicked an empty hex — move there and show attack options.
@@ -333,6 +450,7 @@ func _action_move(target_hex: Vector3i) -> void:
 	tilemap.clear_cursor()
 	_show_attackable(active_stack)
 	phase = CombatPhase.PLAYER_ATTACK
+	_finish_player_turn()
 
 
 func _try_attack(target: UnitStack) -> void:
@@ -340,8 +458,9 @@ func _try_attack(target: UnitStack) -> void:
 	## 1. Ranged unit: shoot from current hex (full damage).
 	##    Exception: if an enemy is adjacent to the shooter, it must melee-attack
 	##    that enemy instead (half damage = ranged_penalty applied).
-	## 2. Melee unit: auto-move to the nearest free hex adjacent to the target,
-	##    then attack. Move is only possible if that hex is within movement range.
+	## 2. Melee unit: player selects the attack position by hovering around the enemy
+	##    (HoMM3 style). _chosen_attack_hex holds the player's selection.
+	##    If already adjacent, attack directly. Otherwise move to chosen hex first.
 
 	var is_ranged: bool = active_stack.unit_data.is_ranged \
 		and active_stack.ammo_remaining > 0
@@ -367,23 +486,36 @@ func _try_attack(target: UnitStack) -> void:
 			_finish_player_turn()
 		return
 
-	## Melee path: auto-move to an adjacent hex, then strike.
+	## Melee path: use _chosen_attack_hex (player hovered to select position),
+	## or fall back to auto-pick if the chosen hex is stale/missing.
 	if _is_adjacent(active_stack.hex, target.hex):
-		## Already adjacent — attack immediately.
+		## Already adjacent, but honour the player's directional choice:
+		## if they aimed at a different adjacent hex (via the position picker)
+		## and can reach it, move there first so the attack comes from that side.
+		var chosen: Vector3i = _chosen_attack_hex
+		if chosen != Vector3i.ZERO \
+				and chosen != active_stack.hex \
+				and chosen in _reachable_hexes \
+				and _is_adjacent(chosen, target.hex):
+			_move_stack_to(active_stack, chosen)
 		_perform_attack(active_stack, target)
 		_finish_player_turn()
 		return
 
-	## Find the best free adjacent hex reachable this turn.
-	var adj_free: Vector3i = _nearest_free_adjacent_in_range(active_stack, target)
-	if adj_free == Vector3i.ZERO:
-		## Target unreachable this turn — do nothing (player must move manually first).
+	## Resolve the destination hex.
+	var dest: Vector3i = _chosen_attack_hex
+	if dest == Vector3i.ZERO or not (dest in _reachable_hexes):
+		## Fallback: auto-pick nearest reachable adjacent hex.
+		dest = _nearest_free_adjacent_in_range(active_stack, target)
+
+	if dest == Vector3i.ZERO:
+		## Target unreachable this turn — inform the player and do nothing.
 		_log("%s can't reach %s this turn." % [
 			active_stack.unit_data.unit_name, target.unit_data.unit_name])
 		return
 
-	## Silently move to the adjacent hex then attack.
-	_move_stack_to(active_stack, adj_free)
+	## Move to the chosen (or fallback) adjacent hex, then attack.
+	_move_stack_to(active_stack, dest)
 	_perform_attack(active_stack, target)
 	_finish_player_turn()
 
@@ -394,8 +526,18 @@ func _action_wait() -> void:
 	_log("%s waits." % active_stack.unit_data.unit_name)
 	_deselect_all()
 	tilemap.clear_highlights()
+	tilemap.clear_cursor()
+	tilemap.clear_attack_positions()
+	_hovered_enemy     = null
+	_attack_positions.clear()
+	_chosen_attack_hex = Vector3i.ZERO
 	turn_manager.wait_current()
-	# Don't call advance — wait_current already removed it from front
+	## wait_current() removes the stack from _queue into _wait_queue.
+	## If _queue is now empty all other stacks already acted this round,
+	## so we need to flush the wait queue. advance() handles this correctly:
+	## when called on an empty _queue it triggers _end_round() or flushes waits.
+	if turn_manager.current_stack() == null:
+		turn_manager.advance()
 	_start_next_turn()
 
 
@@ -408,6 +550,10 @@ func _action_defend() -> void:
 	turn_manager.defend_current()
 	_deselect_all()
 	tilemap.clear_highlights()
+	tilemap.clear_attack_positions()
+	_hovered_enemy     = null
+	_attack_positions.clear()
+	_chosen_attack_hex = Vector3i.ZERO
 	_start_next_turn()
 
 
@@ -463,31 +609,68 @@ func _perform_attack(attacker: UnitStack, defender: UnitStack) -> void:
 	if defender.is_dead():
 		_on_stack_died(defender)
 	else:
-		# Retaliation (once per round, if not no_retaliation ability, melee only)
-		if not attacker.unit_data.has_ability("no_retaliation") \
-				and not defender.unit_data.is_ranged \
-				and not defender.has_retaliated:
-			defender.has_retaliated = true
-			_perform_retaliation(defender, attacker)
+		# Retaliation only against melee attacks
+		var was_melee_attack: bool = _is_adjacent(attacker.hex, defender.hex)
 
-	_check_combat_over()
+		if was_melee_attack \
+			and not attacker.unit_data.has_ability("no_retaliation") \
+			and not defender.has_retaliated:
+
+			var can_retaliate: bool = true
+
+			# Ranged units retaliate ONLY in melee
+			if defender.unit_data.is_ranged:
+				can_retaliate = _is_adjacent(defender.hex, attacker.hex)
+
+			if can_retaliate:
+				defender.has_retaliated = true
+				_perform_retaliation(defender, attacker)
+
+	if _check_combat_over():
+		return   ## combat ended — don't touch phase
 	phase = CombatPhase.PLAYER_SELECT
 
 
 func _perform_retaliation(retaliator: UnitStack, target: UnitStack) -> void:
 	if retaliator.is_dead():
 		return
-	var damage: int = DamageCalculator.calculate(retaliator, target)
+
+	var ranged_penalty: bool = false
+
+	# Ranged retaliation in melee uses reduced damage
+	if retaliator.unit_data.is_ranged:
+		ranged_penalty = true
+
+	var damage: int = DamageCalculator.calculate(
+		retaliator,
+		target,
+		0,
+		0,
+		false,
+		ranged_penalty
+	)
+
 	var killed: int = target.apply_damage(damage)
+
 	_log("  ↩ %s retaliates: %d damage, %d killed." % [
-		retaliator.unit_data.unit_name, damage, killed
+		retaliator.unit_data.unit_name,
+		damage,
+		killed
 	])
-	EventBus.unit_attacked.emit(retaliator.stack_id, target.stack_id, damage, killed)
+
+	EventBus.unit_attacked.emit(
+		retaliator.stack_id,
+		target.stack_id,
+		damage,
+		killed
+	)
+
 	if target.is_dead():
 		_on_stack_died(target)
 
-
 func _on_stack_died(stack: UnitStack) -> void:
+	if stack == null:
+		return
 	_log("☠ %s eliminated!" % stack.unit_data.unit_name)
 	EventBus.unit_died.emit(stack.stack_id, stack.unit_data.faction, stack.unit_data)
 	_hex_to_stack.erase(stack.hex)
@@ -504,7 +687,11 @@ func _on_stack_died(stack: UnitStack) -> void:
 
 func _run_ai_turn() -> void:
 	phase = CombatPhase.ENEMY_TURN
-	await get_tree().create_timer(0.55).timeout   ## brief pause so player can see
+	await get_tree().create_timer(0.55).timeout
+
+	## Re-check after await — combat may have ended while the timer ran.
+	if phase == CombatPhase.COMBAT_OVER:
+		return
 
 	var ai_stack: UnitStack = active_stack
 	if ai_stack == null or ai_stack.is_dead():
@@ -702,6 +889,25 @@ func _nearest_free_adjacent(from_hex: Vector3i, target: UnitStack) -> Vector3i:
 	return best
 
 
+## Returns all free, in-bounds hexes adjacent to `target` that `stack` can reach
+## this turn (including its current hex if already adjacent).
+## Used by the HoMM3 attack-position picker.
+func _get_attack_positions_for(stack: UnitStack, target: UnitStack) -> Array[Vector3i]:
+	var blocked: Array[Vector3i]   = _get_blocked_hexes(stack)
+	var reachable: Array[Vector3i] = HexGrid.get_reachable(
+		stack.hex, stack.movement_left, blocked)
+	var result: Array[Vector3i] = []
+	for nb: Vector3i in HexGrid.get_neighbours(target.hex):
+		if not HexGrid.is_in_bounds(nb):
+			continue
+		if nb in blocked:
+			continue
+		## Include the attacker's current hex if it is adjacent (already there).
+		if nb == stack.hex or nb in reachable:
+			result.append(nb)
+	return result
+
+
 func _find_nearest_enemy(stack: UnitStack) -> UnitStack:
 	var enemies: Array[UnitStack] = (
 		attacker_stacks if stack.side == 1 else defender_stacks)
@@ -806,23 +1012,25 @@ func _load_test_battle() -> void:
 		6, 3, 2, 4, 10, 4, 4,  true,  "res://assets/sprites/archer.png")
 	var goblin    := _make_test_unit("goblin",     "Goblin",     "stronghold",
 		4, 2, 1, 2,  5, 5, 3,  false, "res://assets/sprites/enemy_swordman.png")
-	var wolf      := _make_test_unit("wolf_rider", "Wolf Rider", "stronghold",
-		5, 4, 2, 5, 20, 6, 5,  false, "res://assets/sprites/enemy_archer.png")
+	var skeleton      := _make_test_unit("wolf_rider", "Skeleton", "stronghold",
+		5, 4, 2, 5, 20, 6, 5,  true, "res://assets/sprites/enemy_archer.png")
 
 	var att_army: Array = [
 		{"unit_id": "swordsman", "count": 20},
 		{"unit_id": "archer",    "count": 15},
+		{"unit_id": "archer",    "count": 15},
+		{"unit_id": "swordsman", "count": 2},
 	]
 	var def_army: Array = [
 		{"unit_id": "goblin",     "count": 30},
-		{"unit_id": "wolf_rider", "count": 12},
+		{"unit_id": "skeleton", "count": 12},
 	]
 
 	# Register in DataManager's cache directly for this session
 	DataManager.units["swordsman"]  = swordsman
 	DataManager.units["archer"]     = archer
 	DataManager.units["goblin"]     = goblin
-	DataManager.units["wolf_rider"] = wolf
+	DataManager.units["skeleton"] = skeleton
 
 	_spawn_armies(att_army, def_army)
 
