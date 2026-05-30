@@ -56,6 +56,10 @@ const VISION_RADIUS: int = 5
 const FOG_UNSEEN:    float = 0.0   # fully opaque
 const FOG_EXPLORED:  float = 1.0   # fully clear — same as visible
 
+## Distance (in tiles) over which the fog red-channel fades from 1.0 down to 0.0.
+## Larger values = a wider, smoother transition zone around explored-area edges.
+const SMOOTH_RADIUS: int = 3
+
 
 # ── STATE ────────────────────────────────────────────────────────────────────────
 
@@ -72,7 +76,8 @@ var movement_points: int = MAX_MOVE_POINTS
 var _blocked_tiles: Array[Vector2i] = []
 var _path: Array[Vector2i] = []             # full A* path from player to hovered tile
 var _reachable_path: Array[Vector2i] = []   # prefix truncated by movement budget
-var _pathfinding_blocked: Array[Vector2i] = []  # obstacles + unexplored fog tiles
+var _pathfinding_blocked: Array[Vector2i] = []  # obstacles + unreachable fog tiles
+var _moveable_tiles: Dictionary = {}         # explored + gradient zone — set during _update_fog()
 
 # ── CHILD NODES ──────────────────────────────────────────────────────────────────
 
@@ -180,6 +185,10 @@ func _setup_fog() -> void:
 	_fog_sprite.name = "FogSprite"
 	_fog_sprite.z_index = 0  # above terrain, below path/player
 	_fog_sprite.centered = false
+	# Linear filtering makes the 1px-per-tile fog image smoothly interpolate
+	# between adjacent pixels — softens the gradient so it doesn't look
+	# like hard tile-to-tile steps. The noise sampler is unaffected.
+	_fog_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	_fog_sprite.scale = Vector2(
 		SquareGrid.TILE_SIZE * MAP_SCALE,
 		SquareGrid.TILE_SIZE * MAP_SCALE
@@ -191,15 +200,17 @@ func _setup_fog() -> void:
 	_fog_image.fill(Color(0, 0, 0, 1))
 	_fog_sprite.texture = ImageTexture.create_from_image(_fog_image)
 
-	# --- Noise texture for organic fog appearance ---
+	# --- Noise texture for organic fog texture ---
+	# Higher frequency (0.35) + larger texture (256×256) gives finer
+	# mist detail so it doesn't feel like large "too close" blobs.
 	var noise := FastNoiseLite.new()
 	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	noise.frequency = 0.12
+	noise.frequency = 0.35
 
 	var noise_texture := NoiseTexture2D.new()
 	noise_texture.noise = noise
-	noise_texture.width = 128
-	noise_texture.height = 128
+	noise_texture.width = 256
+	noise_texture.height = 256
 	noise_texture.seamless = true
 
 	# --- Shader material ---
@@ -289,60 +300,106 @@ func _sync_player_position() -> void:
 
 
 func _get_visible_tiles(center: Vector2i, radius: int) -> Array[Vector2i]:
-	## Return all in-bounds tiles within Chebyshev distance ≤ radius of center.
+	## Return all in-bounds tiles within Euclidean distance ≤ radius of center.
+	## Euclidean gives a round reveal area (Chebyshev would be square).
+	var radius_sq: int = radius * radius
 	var tiles: Array[Vector2i] = []
 	for x in range(center.x - radius, center.x + radius + 1):
 		for y in range(center.y - radius, center.y + radius + 1):
 			var tile := Vector2i(x, y)
-			if _is_in_bounds(tile) and SquareGrid.chebyshev_distance(tile, center) <= radius:
+			if not _is_in_bounds(tile):
+				continue
+			var dx: int = tile.x - center.x
+			var dy: int = tile.y - center.y
+			if dx * dx + dy * dy <= radius_sq:
 				tiles.append(tile)
 	return tiles
 
 
 func _update_fog() -> void:
-	## Recompute visibility from the current player position and draw the fog image.
-	## Uses the red channel as a transparency mask consumed by the fog shader.
+	## Recompute visibility from the current player position and draw the fog image
+	## with a smooth gradient border at the explored/unexplored boundary.
+	##
+	## The fog image uses the red channel as a transparency mask:
+	##   r=1.0 → shader subtracts from alpha → fully clear
+	##   r=0.0 → shader keeps alpha at 1.0    → fully opaque (fogged)
+	##   r=0.0..1.0 → gradient blend zone at the explored frontier
+	##
+	## A BFS starting from every explored tile feathers the red value outward
+	## over SMOOTH_RADIUS tiles, so the fog fades in gradually rather than
+	## cutting off sharply at tile boundaries.
 	if not is_instance_valid(_fog_sprite):
 		return
 
-	# Track explored tiles for save/load persistence
+	# 1. Record newly visible tiles so they persist across turns
 	var visible_tiles: Array[Vector2i] = _get_visible_tiles(player_tile, VISION_RADIUS)
 	for vt: Vector2i in visible_tiles:
 		if not vt in GameState.explored_tiles:
 			GameState.explored_tiles.append(vt)
 
-	# Build a fast explored lookup
+	# 2. Build a fast explored lookup
 	var explored: Dictionary = {}
 	for et: Vector2i in GameState.explored_tiles:
 		explored[et] = true
 
-	# Draw the fog image from scratch: each pixel encodes visibility in the red channel.
-	# The shader maps:  r=1 → fully transparent (visible), r=0 → fully opaque (unseen).
+	# 3. Initialise the fog image: explored=1.0, unexplored=0.0
 	for x: int in range(MAP_COLS):
 		for y: int in range(MAP_ROWS):
 			var tile := Vector2i(x, y)
-			var red: float
-
-			if explored.has(tile):
-				red = FOG_EXPLORED   # 1.0 — fully clear
-			else:
-				red = FOG_UNSEEN     # 0.0 — fully fogged
-
+			var red: float = FOG_EXPLORED if explored.has(tile) else FOG_UNSEEN
 			_fog_image.set_pixel(x, y, Color(red, red, red, 1.0))
+
+	# 4. BFS from the explored frontier to create a smooth gradient.
+	#    Each step outward from an explored tile reduces the red value,
+	#    creating a gradual fade over SMOOTH_RADIUS tiles.
+	var queue: Array[Vector2i] = []
+	queue.assign(GameState.explored_tiles)
+	var dist: Dictionary = {}
+	for et: Vector2i in GameState.explored_tiles:
+		dist[et] = 0
+
+	var idx: int = 0
+	while idx < queue.size():
+		var current: Vector2i = queue[idx]
+		idx += 1
+		var d: int = dist[current] as int
+		if d >= SMOOTH_RADIUS:
+			continue
+
+		for nb: Vector2i in SquareGrid.get_neighbours(current):
+			if not _is_in_bounds(nb):
+				continue
+			if dist.has(nb):
+				continue
+			dist[nb] = d + 1
+			queue.append(nb)
+			var red: float = 1.0 - float(d + 1) / float(SMOOTH_RADIUS)
+			_fog_image.set_pixel(nb.x, nb.y, Color(red, red, red, 1.0))
+
+	# 5. Build the moveable set for input + pathfinding.
+	#    Include all explored tiles and gradient neighbours where the red
+	#    value is still > 0. The outermost BFS ring (distance == SMOOTH_RADIUS)
+	#    gets red=0.0 (fully fogged) — those tiles stay blocked to prevent
+	#    clicking into solid fog beyond the blend zone.
+	_moveable_tiles = {}
+	for tile: Variant in dist:
+		if (dist[tile] as int) < SMOOTH_RADIUS:
+			_moveable_tiles[tile as Vector2i] = true
 
 	_fog_sprite.texture = ImageTexture.create_from_image(_fog_image)
 	EventBus.fog_updated.emit(visible_tiles)
 
-	# Rebuild pathfinding blocked cache to exclude unexplored tiles
+	# Rebuild pathfinding blocked cache to exclude unreachable fog tiles
 	_rebuild_pathfinding_blocked()
 
 
 func _rebuild_pathfinding_blocked() -> void:
-	## Combine obstacles and unexplored tiles into one blocked set for pathfinding.
-	## This prevents the player from pathfinding through fog.
-	var explored: Dictionary = {}
-	for et: Vector2i in GameState.explored_tiles:
-		explored[et] = true
+	## Combine obstacles and non-moveable tiles into one blocked set for pathfinding.
+	## A tile is moveable if it's explored OR within SMOOTH_RADIUS of an explored tile
+	## (the gradient/blend zone). Everything else is blocked.
+	## This lets the player pathfind and click through the smooth border zone.
+	if _moveable_tiles.is_empty():
+		return
 
 	var blocked_dict: Dictionary = {}
 	for bt: Vector2i in _blocked_tiles:
@@ -351,7 +408,7 @@ func _rebuild_pathfinding_blocked() -> void:
 	for x: int in range(MAP_COLS):
 		for y: int in range(MAP_ROWS):
 			var tile := Vector2i(x, y)
-			if not explored.has(tile) and not blocked_dict.has(tile):
+			if not _moveable_tiles.has(tile) and not blocked_dict.has(tile):
 				result.append(tile)
 
 	_pathfinding_blocked = result
@@ -440,11 +497,12 @@ func _on_hover(tile: Vector2i) -> void:
 
 	_tile_info.text = "Tile: %s" % [str(tile)]
 
-	# No path if hovering the player's tile, a fogged tile, or an obstacle
+	# No path if hovering the player's tile, an obstacle, or a tile
+	# beyond the moveable frontier (explored + gradient blend zone).
 	if tile == player_tile or tile in _blocked_tiles:
 		return
 
-	if not tile in GameState.explored_tiles:
+	if not _moveable_tiles.has(tile):
 		return
 
 	# Compute full A* path
@@ -503,7 +561,7 @@ func _on_click(tile: Vector2i) -> void:
 	if tile in _blocked_tiles:
 		return
 
-	if not tile in GameState.explored_tiles:
+	if not _moveable_tiles.has(tile):
 		return
 
 	# If there's a cached path and the clicked tile is in the reachable prefix,

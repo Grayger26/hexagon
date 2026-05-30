@@ -14,11 +14,15 @@ void fragment() {
 	// Red channel subtracts from alpha — reveals terrain underneath
 	t.a -= t.r;
 
-	// Dark, dense fog colour with noise-based variation
-	// Darker base gives a heavier, more opaque feel
-	const vec3 FOG_DARK  = vec3(0.04, 0.05, 0.08);
-	const vec3 FOG_LIGHT = vec3(0.14, 0.16, 0.22);
-	t.rgb = mix(FOG_DARK, FOG_LIGHT, n.r);
+	// Dense, heavy fog — deep blue-grey that feels thick and solid.
+	// Very tightly compressed noise range (0.37–0.63) so the colour is
+	// almost uniform — the fog reads as a single dense mass with just
+	// a whisper of organic texture to avoid a flat look.
+	const vec3 FOG_DARK  = vec3(0.10, 0.12, 0.22);
+	const vec3 FOG_LIGHT = vec3(0.18, 0.20, 0.30);
+	// Minimal noise influence: the fog stays nearly the same colour
+	// everywhere, making it feel consistently filled and substantial.
+	t.rgb = mix(FOG_DARK, FOG_LIGHT, n.r * 0.26 + 0.37);
 
 	COLOR = t;
 }
