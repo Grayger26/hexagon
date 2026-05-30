@@ -48,6 +48,14 @@ const SRC_ARROW: int = 0
 # ── MOVEMENT COST ────────────────────────────────────────────────────────────────
 const MOVE_COST_PER_TILE: int = 100
 
+# ── FOG OF WAR ───────────────────────────────────────────────────────────────────
+## Vision radius around the hero (in tiles, Euclidean distance).
+const VISION_RADIUS: int = 5
+
+## Fog image value for the red channel (shader uses r → α transparency).
+const FOG_UNSEEN:    float = 0.0   # fully opaque
+const FOG_EXPLORED:  float = 1.0   # fully clear — same as visible
+
 
 # ── STATE ────────────────────────────────────────────────────────────────────────
 
@@ -62,15 +70,18 @@ var player_tile: Vector2i = START_TILE
 var movement_points: int = MAX_MOVE_POINTS
 
 var _blocked_tiles: Array[Vector2i] = []
-var _path: Array[Vector2i] = []            # full A* path from player to hovered tile
-var _reachable_path: Array[Vector2i] = []  # prefix truncated by movement budget
+var _path: Array[Vector2i] = []             # full A* path from player to hovered tile
+var _reachable_path: Array[Vector2i] = []   # prefix truncated by movement budget
+var _pathfinding_blocked: Array[Vector2i] = []  # obstacles + unexplored fog tiles
 
 # ── CHILD NODES ──────────────────────────────────────────────────────────────────
 
 var _terrain_layer: TileMapLayer
 var _path_layer:    TileMapLayer
 var _player_sprite: Sprite2D
-var _camera:        Camera2D
+var _fog_sprite:    Sprite2D
+var _fog_image: Image
+var _camera:   Camera2D
 var _move_label:    Label
 var _end_turn_btn:  Button
 var _tile_info:     Label
@@ -83,8 +94,10 @@ func _ready() -> void:
 	_generate_map()
 	_setup_camera()
 	_setup_player()
+	_setup_fog()
 	_setup_ui()
 	_refresh_hud()
+	_update_fog()
 
 
 # ── TILEMAP SETUP ────────────────────────────────────────────────────────────────
@@ -155,6 +168,46 @@ func _build_arrow_tileset() -> TileSet:
 
 	ts.add_source(source, SRC_ARROW)
 	return ts
+
+
+func _setup_fog() -> void:
+	## Create the fog-of-war overlay using a pixelated Sprite2D with a shader.
+	## The fog image maps 1 pixel per tile; the shader adds noise for an organic look
+	## and uses the red channel to control transparency (r → α).
+
+	# --- Fog Sprite ---
+	_fog_sprite = Sprite2D.new()
+	_fog_sprite.name = "FogSprite"
+	_fog_sprite.z_index = 0  # above terrain, below path/player
+	_fog_sprite.centered = false
+	_fog_sprite.scale = Vector2(
+		SquareGrid.TILE_SIZE * MAP_SCALE,
+		SquareGrid.TILE_SIZE * MAP_SCALE
+	)
+	add_child(_fog_sprite)
+
+	# --- Fog image (1 pixel = 1 tile) ---
+	_fog_image = Image.create(MAP_COLS, MAP_ROWS, false, Image.FORMAT_RGBA8)
+	_fog_image.fill(Color(0, 0, 0, 1))
+	_fog_sprite.texture = ImageTexture.create_from_image(_fog_image)
+
+	# --- Noise texture for organic fog appearance ---
+	var noise := FastNoiseLite.new()
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.frequency = 0.12
+
+	var noise_texture := NoiseTexture2D.new()
+	noise_texture.noise = noise
+	noise_texture.width = 128
+	noise_texture.height = 128
+	noise_texture.seamless = true
+
+	# --- Shader material ---
+	var material := ShaderMaterial.new()
+	material.shader = preload("res://shaders/fog_of_war.gdshader")
+	material.set_shader_parameter("noise", noise_texture)
+	_fog_sprite.material = material
+
 
 
 # ── MAP GENERATION ───────────────────────────────────────────────────────────────
@@ -230,6 +283,78 @@ func _sync_player_position() -> void:
 	if _player_sprite:
 		_player_sprite.position = pos
 	_camera.position = pos
+
+
+# ── FOG OF WAR ─────────────────────────────────────────────────────────────────
+
+
+func _get_visible_tiles(center: Vector2i, radius: int) -> Array[Vector2i]:
+	## Return all in-bounds tiles within Chebyshev distance ≤ radius of center.
+	var tiles: Array[Vector2i] = []
+	for x in range(center.x - radius, center.x + radius + 1):
+		for y in range(center.y - radius, center.y + radius + 1):
+			var tile := Vector2i(x, y)
+			if _is_in_bounds(tile) and SquareGrid.chebyshev_distance(tile, center) <= radius:
+				tiles.append(tile)
+	return tiles
+
+
+func _update_fog() -> void:
+	## Recompute visibility from the current player position and draw the fog image.
+	## Uses the red channel as a transparency mask consumed by the fog shader.
+	if not is_instance_valid(_fog_sprite):
+		return
+
+	# Track explored tiles for save/load persistence
+	var visible_tiles: Array[Vector2i] = _get_visible_tiles(player_tile, VISION_RADIUS)
+	for vt: Vector2i in visible_tiles:
+		if not vt in GameState.explored_tiles:
+			GameState.explored_tiles.append(vt)
+
+	# Build a fast explored lookup
+	var explored: Dictionary = {}
+	for et: Vector2i in GameState.explored_tiles:
+		explored[et] = true
+
+	# Draw the fog image from scratch: each pixel encodes visibility in the red channel.
+	# The shader maps:  r=1 → fully transparent (visible), r=0 → fully opaque (unseen).
+	for x: int in range(MAP_COLS):
+		for y: int in range(MAP_ROWS):
+			var tile := Vector2i(x, y)
+			var red: float
+
+			if explored.has(tile):
+				red = FOG_EXPLORED   # 1.0 — fully clear
+			else:
+				red = FOG_UNSEEN     # 0.0 — fully fogged
+
+			_fog_image.set_pixel(x, y, Color(red, red, red, 1.0))
+
+	_fog_sprite.texture = ImageTexture.create_from_image(_fog_image)
+	EventBus.fog_updated.emit(visible_tiles)
+
+	# Rebuild pathfinding blocked cache to exclude unexplored tiles
+	_rebuild_pathfinding_blocked()
+
+
+func _rebuild_pathfinding_blocked() -> void:
+	## Combine obstacles and unexplored tiles into one blocked set for pathfinding.
+	## This prevents the player from pathfinding through fog.
+	var explored: Dictionary = {}
+	for et: Vector2i in GameState.explored_tiles:
+		explored[et] = true
+
+	var blocked_dict: Dictionary = {}
+	for bt: Vector2i in _blocked_tiles:
+		blocked_dict[bt] = true
+	var result: Array[Vector2i] = _blocked_tiles.duplicate()
+	for x: int in range(MAP_COLS):
+		for y: int in range(MAP_ROWS):
+			var tile := Vector2i(x, y)
+			if not explored.has(tile) and not blocked_dict.has(tile):
+				result.append(tile)
+
+	_pathfinding_blocked = result
 
 
 func _tile_to_local(tile: Vector2i) -> Vector2:
@@ -315,13 +440,16 @@ func _on_hover(tile: Vector2i) -> void:
 
 	_tile_info.text = "Tile: %s" % [str(tile)]
 
-	# No path if hovering the player's tile or an obstacle
+	# No path if hovering the player's tile, a fogged tile, or an obstacle
 	if tile == player_tile or tile in _blocked_tiles:
+		return
+
+	if not tile in GameState.explored_tiles:
 		return
 
 	# Compute full A* path
 	var full_path: Array[Vector2i] = SquareGrid.find_path(
-		player_tile, tile, _blocked_tiles)
+		player_tile, tile, _pathfinding_blocked)
 	if full_path.is_empty():
 		return
 
@@ -375,6 +503,9 @@ func _on_click(tile: Vector2i) -> void:
 	if tile in _blocked_tiles:
 		return
 
+	if not tile in GameState.explored_tiles:
+		return
+
 	# If there's a cached path and the clicked tile is in the reachable prefix,
 	# move to that tile. Otherwise, compute a fresh path.
 	var target_path: Array[Vector2i] = []
@@ -386,7 +517,7 @@ func _on_click(tile: Vector2i) -> void:
 	else:
 		# Clicked a tile not in current hover path — try to reach it
 		var path: Array[Vector2i] = SquareGrid.find_path(
-			player_tile, tile, _blocked_tiles, movement_points)
+			player_tile, tile, _pathfinding_blocked, movement_points)
 		if path.is_empty():
 			return  # unreachable
 		# Verify the path is within budget
@@ -410,21 +541,18 @@ func _animate_movement(path: Array[Vector2i]) -> void:
 	movement_points -= cost
 	_refresh_hud()
 
-	# Animate along the path
-	var tween := create_tween()
-	tween.set_trans(Tween.TRANS_LINEAR)
-	tween.set_ease(Tween.EASE_IN_OUT)
-
-	var prev_tile: Vector2i = player_tile
+	# Animate step by step, revealing fog after each tile
 	for step: Vector2i in path:
-		var target_pos: Vector2 = _tile_to_local(step)
-		tween.tween_property(_player_sprite, "position", target_pos, 0.1)
+		player_tile = step
+		var tween := create_tween()
+		tween.set_trans(Tween.TRANS_LINEAR)
+		tween.set_ease(Tween.EASE_IN_OUT)
+		tween.tween_property(_player_sprite, "position", _tile_to_local(step), 0.1)
+		await tween.finished
 
-	player_tile = path[-1]  # last tile in the movement
+		_sync_player_position()
+		_update_fog()
 
-	await tween.finished
-
-	_sync_player_position()
 	phase = MapPhase.IDLE
 	_refresh_hud()
 

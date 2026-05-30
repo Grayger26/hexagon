@@ -31,6 +31,10 @@
 - `HexGrid` (RefCounted) — Cube-coordinate hex grid (pointy-top, odd-r), A* pathfinding, LoS
 - `SquareGrid` (RefCounted) — 8-directional square grid for adventure map, Chebyshev A*
 - `DamageCalculator` (RefCounted) — Static HoMM3 damage formula with luck, morale, ranged penalty
+- **`FogOfWar`** (Sprite2D + shader) — Pixelated fog overlay using noise texture (FastNoiseLite) for organic appearance. Red channel of a 1px-per-tile image drives transparency via shader (`a -= r`). Three states: UNSEEN (fully fogged), EXPLORED (fully clear), with pathfinding blocked through unexplored fog.
+
+### Shaders
+- `fog_of_war.gdshader` — CanvasItem shader for fog of war. Samples a simplex-noise texture, uses the fog image's red channel as a transparency mask, replaces colour with a dark blue-grey tinted noise for a dense mist effect.
 
 ---
 
@@ -55,7 +59,9 @@
 ### Milestone 3 — Adventure Map (PARTIALLY COMPLETE)
 - SquareGrid with 8-dir A* pathfinding
 - AdventureMap with 50×35 grid, obstacles, movement points, path preview, click-to-move animation, Camera2D, HUD (movement label, tile info, End Turn button)
-- No fog of war, no map objects, no time system, no full HUD, no terrain variety
+- **Fog of war** — Sprite2D + shader overlay using FastNoiseLite noise. Binary unseen/explored visibility, vision radius of 5 tiles, pathfinding blocked through fog, smooth tile-by-tile reveal during movement
+- No fog of war save/load integration (GameState.explored_tiles serialized but not wired to adventure map load)
+- No map objects, no time system, no full HUD, no terrain variety
 
 ### Milestone 4+ — Not started
 
@@ -69,3 +75,6 @@
 - **Adventure map phase enum** — IDLE → MOVING (input blocked during animation)
 - **A* tie-breaking** — Cardinal directions explored before diagonals to avoid zigzag paths
 - **Path arrows** — Forward-looking (each tile shows direction to next tile), atlas layout NW/N/NE on row 0, W/+/E on row 1, SW/S/SE on row 2
+- **Fog of war rendering** — Sprite2D with procedural pixel image (1px per tile) scaled to cover map, ShaderMaterial with noise-driven fog colour, red channel as transparency mask. NOT a TileMapLayer overlay (avoids per-tile rendering cost and enables smooth gradient edges and noise effects)
+- **Visibility radius** — Euclidean distance (circular), not Chebyshev (diamond), for a natural circular reveal edge
+- **Pathfinding blocked by fog** — Combined cache of obstacles + unexplored tiles rebuilt after each fog update. Prevents A* from routing through unseen terrain

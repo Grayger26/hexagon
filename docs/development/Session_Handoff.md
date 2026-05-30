@@ -2,21 +2,26 @@
 
 ## Work Completed
 
-- **Fixed A* zigzag paths on adventure map** — Reordered `DIRECTIONS_MOVE` in `SquareGrid.gd` so cardinal directions (N, E, S, W) are explored before diagonals (NE, SE, SW, NW). This prevents A* from producing zigzag paths when cardinal and diagonal steps have equal f-cost under Chebyshev heuristic.
+- **Fog of war (initial implementation)** — TileMapLayer overlay with three visibility states, Chebyshev distance radius, flat-colour tiles. Later replaced.
 
-- **Fixed path arrow directions** — Changed `_draw_path_arrows` in `AdventureMap.gd` from backward-looking (`diff = curr - prev`) to forward-looking (`diff = nxt - curr`). Arrows now point toward the next tile instead of back toward the player.
+- **Fog of war (visual upgrade)** — Switched from TileMapLayer to Sprite2D with procedural pixel image (50×35 px, 1px per tile) and ShaderMaterial. FastNoiseLite simplex noise provides organic cloudy appearance. Red channel encodes visibility; shader does `a -= r` for transparency. Dark blue-grey fog colour (`0.04–0.22` range) for dense mist effect. Binary state: explored tiles fully clear, unexplored tiles fully fogged.
 
-- **Fixed diagonal arrow atlas mapping** — Reverted accidental diagonal swap in `DIRECTION_ARROW_ATLAS`. The atlas follows natural corner layout: (0,0)=NW, (2,0)=NE, (0,2)=SW, (2,2)=SE. The shaft extends toward the opposite corner; the arrowhead is at the atlas-position corner.
+- **Fog movement blocking** — `_on_hover` and `_on_click` reject unexplored tiles. `_pathfinding_blocked` cache combines obstacles + unexplored tiles, rebuilt after each fog update. A* cannot route through fog.
 
-- **Created docs/development/Project_State.md** — Project architecture and milestone status reference.
+- **Step-by-step fog reveal** — `_animate_movement` refactored to iterate each step individually, updating `player_tile` and calling `_update_fog()` after every tile instead of only at the end.
+
+## New Files
+
+| File | Purpose |
+|---|---|
+| `shaders/fog_of_war.gdshader` | CanvasItem shader: noise-sampled fog colour, red-channel transparency mask |
 
 ## Modified Files
 
 | File | Change |
 |---|---|
-| `scripts/adventure_map/SquareGrid.gd` | DIRECTIONS_MOVE ordering (cardinals first); DIRECTION_ARROW_ATLAS diagonal entries reverted to original |
-| `scripts/adventure_map/AdventureMap.gd` | `_draw_path_arrows` forward-looking diff |
-| `docs/development/Project_State.md` | New — project state reference |
+| `scripts/adventure_map/AdventureMap.gd` | Replaced TileMapLayer fog overlay with Sprite2D + shader system; added `_pathfinding_blocked` cache; step-by-step fog reveal; fogged-tile input rejection |
+| `docs/development/Project_State.md` | Updated with fog system, shader, and architecture decisions |
 
 ## Unfinished Tasks
 
@@ -25,19 +30,19 @@
 - Hero integration (hero panels on battlefield, hero action, hero death)
 - War machines (Ballista, Ammo Cart, First Aid Tent)
 - Siege combat (walls, gate, moat, towers, catapult)
-- Special abilities (double_attack, life_drain, etc. defined but not checked in combat)
+- Special abilities (`double_attack`, `life_drain` etc. defined but not checked in combat)
 - Damage animation / floating numbers / projectile visuals
 - Large (2-hex) units
 - Combat AI lacking hero spellcasting and target prioritization
 
 ### Adventure Map (Milestone 3)
-- Fog of war (GameState.explored_tiles exists, no render-time overlay)
 - Map objects (mines, chests, towns, neutral creature stacks)
 - Day/Week/Month time system (GameState has fields, no TimeManager)
-- Full HUD (resource bar, mini-map, day counter)
+- Full HUD (resource bar, minimap, day counter)
 - Terrain types and movement cost variation
-- Seeded map generation
+- Seeded map generation (still uses `rng.randomize()` instead of `GameState.run_seed`)
 - Underground layer
+- Fog of war save/load integration (explored_tiles serialized but not restored on map load)
 - Hero stats panel on map
 
 ### Integration
@@ -46,9 +51,10 @@
 - 11 missing scenes registered in SceneManager
 - Save/load serialization stubs rely on unimplemented factory classes (HeroFactory, TownFactory)
 
-### Known Issues
+## Known Issues
+
 1. **Combat AI delay** — 0.55s timer at `_run_ai_turn()` start adds delay even when movement animation already took time
-2. **Adventure map unseeded** — `rng.randomize()` instead of `GameState.run_seed`
+2. **Adventure map unseeded** — `rng.randomize()` instead of `GameState.run_seed`  
 3. **UI hardcoded positions** — HUD elements at pixel positions (860, 1020) work at 1920×1080 only
 4. **Path arrows flicker** — `_path_layer.clear()` every mouse-motion frame
 5. **No input deadzone** — clicking very close to player registers as valid movement target
@@ -56,4 +62,4 @@
 
 ## Next Recommended Action
 
-**Fog of war** — 3-state system (UNSEEN/EXPLORED/VISIBLE) with visibility radius around the hero. This is the highest-impact missing feature for the adventure map and a prerequisite for meaningful map exploration.
+**Map objects on adventure map** — Place neutral creature stacks, mines, and chests on the map. This unlocks combat triggering from the adventure map (walk into a neutral stack → CombatScene) and resource income from captured mines, which are the highest-impact missing features for creating a meaningful gameplay loop.
