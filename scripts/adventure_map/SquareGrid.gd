@@ -9,14 +9,17 @@ extends RefCounted
 const TILE_SIZE: int = 32
 
 ## All 8 movement directions: cardinal + diagonal.
+## Cardinal directions listed first so straight-line paths are preferred
+## over zigzag paths when A* f-values are tied (common with Chebyshev heuristic
+## on a uniform-cost 8-dir grid).
 const DIRECTIONS_MOVE: Array[Vector2i] = [
 	Vector2i( 0, -1),  ## N
-	Vector2i( 1, -1),  ## NE
 	Vector2i( 1,  0),  ## E
-	Vector2i( 1,  1),  ## SE
 	Vector2i( 0,  1),  ## S
-	Vector2i(-1,  1),  ## SW
 	Vector2i(-1,  0),  ## W
+	Vector2i( 1, -1),  ## NE
+	Vector2i( 1,  1),  ## SE
+	Vector2i(-1,  1),  ## SW
 	Vector2i(-1, -1),  ## NW
 ]
 
@@ -35,6 +38,9 @@ const DIRECTIONS_8: Array[Vector2i] = [
 ]
 
 ## Atlas coordinates for each 8-direction vector in path_arrows.png (3x3 grid).
+## Layout: row 0 = NW / N / NE, row 1 = W / + / E, row 2 = SW / S / SE.
+## Each arrow's arrowhead is at the corner matching its atlas position;
+## the shaft extends toward the opposite corner.
 const DIRECTION_ARROW_ATLAS: Dictionary = {
 	Vector2i(-1, -1): Vector2i(0, 0),  ## NW
 	Vector2i( 0, -1): Vector2i(1, 0),  ## N

@@ -343,20 +343,24 @@ func _on_hover(tile: Vector2i) -> void:
 
 
 func _draw_path_arrows(path: Array[Vector2i]) -> void:
-	var prev: Vector2i = player_tile
-	for i: int in range(path.size()):
+	## Draw arrows pointing FORWARD along the path.
+	## Each tile (except the last) shows the direction to the NEXT tile.
+	## The last tile shows the target marker.
+	var n: int = path.size()
+	for i: int in range(n):
 		var curr: Vector2i = path[i]
-		var diff: Vector2i = Vector2i(curr.x - prev.x, curr.y - prev.y)
 
 		var atlas_coord: Vector2i
-		if i == path.size() - 1:
-			# Last tile in the reachable path — show target marker
+		if i == n - 1:
+			# Last tile — show target marker
 			atlas_coord = SquareGrid.DIRECTION_ARROW_ATLAS[Vector2i(0, 0)]
 		else:
+			# Arrow points toward the next tile in the path
+			var nxt: Vector2i = path[i + 1]
+			var diff: Vector2i = Vector2i(nxt.x - curr.x, nxt.y - curr.y)
 			atlas_coord = SquareGrid.DIRECTION_ARROW_ATLAS.get(diff, Vector2i(1, 1))
 
 		_path_layer.set_cell(curr, SRC_ARROW, atlas_coord)
-		prev = curr
 
 
 # ── CLICK — MOVEMENT ─────────────────────────────────────────────────────────────
