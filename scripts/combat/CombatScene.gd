@@ -274,7 +274,7 @@ func _finish_player_turn() -> void:
 # ─────────────────────────────────────────────
 
 func _unhandled_input(event: InputEvent) -> void:
-	if phase == CombatPhase.COMBAT_OVER:
+	if phase in [CombatPhase.COMBAT_OVER, CombatPhase.RESOLVE_DAMAGE]:
 		return
 
 	# Keyboard shortcuts
@@ -422,14 +422,41 @@ func _on_click(hex: Vector3i) -> void:
 				_action_move(hex)
 
 
+## Animate `stack` moving from its current hex to `target_hex` along a
+## path that avoids obstacles, allies, and enemies.
+## Uses the existing A* pathfinder (HexGrid.find_path) and a Godot Tween.
+## Blocks input during the animation via RESOLVE_DAMAGE phase.
+func _animate_movement(stack: UnitStack, target_hex: Vector3i,
+		blocked: Array[Vector3i]) -> void:
+	var path: Array[Vector3i] = HexGrid.find_path(
+		stack.hex, target_hex, blocked)
+	if path.is_empty():
+		return  # already at target or unreachable — caller should guard
+
+	phase = CombatPhase.RESOLVE_DAMAGE
+	var old_hex: Vector3i = stack.hex
+	var step_duration: float = 0.08
+
+	var tween := create_tween()
+	tween.set_trans(Tween.TRANS_LINEAR)
+	tween.set_ease(Tween.EASE_IN_OUT)
+
+	for step_hex: Vector3i in path:
+		var pos: Vector2 = tilemap.hex_to_local(step_hex)
+		tween.tween_property(stack, "position", pos, step_duration)
+
+	await tween.finished
+
+	stack.hex = target_hex
+	_update_hex_map_for(stack, old_hex)
+	EventBus.unit_moved.emit(stack.stack_id, old_hex, target_hex)
+
+
 ## Internal helper: moves `stack` to `target_hex` silently (no phase change,
 ## no highlight update). Used by _try_attack for auto-move-then-attack.
 func _move_stack_to(stack: UnitStack, target_hex: Vector3i) -> void:
-	var old_hex: Vector3i = stack.hex
-	stack.hex      = target_hex
-	stack.position = tilemap.hex_to_local(target_hex)
-	_update_hex_map_for(stack, old_hex)
-	EventBus.unit_moved.emit(stack.stack_id, old_hex, target_hex)
+	var blocked: Array[Vector3i] = _get_blocked_hexes(stack)
+	await _animate_movement(stack, target_hex, blocked)
 	_log("%s moves to attack." % stack.unit_data.unit_name)
 	
 
@@ -437,13 +464,9 @@ func _move_stack_to(stack: UnitStack, target_hex: Vector3i) -> void:
 ## Player explicitly clicked an empty hex — move there and show attack options.
 func _action_move(target_hex: Vector3i) -> void:
 	phase = CombatPhase.PLAYER_MOVE
-	var old_hex: Vector3i = active_stack.hex
+	var blocked: Array[Vector3i] = _get_blocked_hexes(active_stack)
+	await _animate_movement(active_stack, target_hex, blocked)
 
-	active_stack.hex      = target_hex
-	active_stack.position = tilemap.hex_to_local(target_hex)
-	_update_hex_map_for(active_stack, old_hex)
-
-	EventBus.unit_moved.emit(active_stack.stack_id, old_hex, target_hex)
 	_log("%s moves." % active_stack.unit_data.unit_name)
 
 	tilemap.clear_highlights()
@@ -497,7 +520,7 @@ func _try_attack(target: UnitStack) -> void:
 				and chosen != active_stack.hex \
 				and chosen in _reachable_hexes \
 				and _is_adjacent(chosen, target.hex):
-			_move_stack_to(active_stack, chosen)
+			await _move_stack_to(active_stack, chosen)
 		_perform_attack(active_stack, target)
 		_finish_player_turn()
 		return
@@ -515,7 +538,7 @@ func _try_attack(target: UnitStack) -> void:
 		return
 
 	## Move to the chosen (or fallback) adjacent hex, then attack.
-	_move_stack_to(active_stack, dest)
+	await _move_stack_to(active_stack, dest)
 	_perform_attack(active_stack, target)
 	_finish_player_turn()
 
@@ -718,10 +741,13 @@ func _run_ai_turn() -> void:
 	if ai_stack.unit_data.is_flying:
 		var dest: Vector3i = _nearest_free_adjacent(ai_stack.hex, target)
 		if dest != Vector3i.ZERO:
-			var old_hex: Vector3i = ai_stack.hex
-			ai_stack.hex      = dest
-			ai_stack.position = tilemap.hex_to_local(dest)
-			_update_hex_map_for(ai_stack, old_hex)
+			# Flying ignores obstacles — block only other units
+			var blocked: Array[Vector3i] = []
+			for s: UnitStack in all_stacks:
+				if s == ai_stack or s.is_dead():
+					continue
+				blocked.append(s.hex)
+			await _animate_movement(ai_stack, dest, blocked)
 
 	# Melee: move toward target
 	else:
@@ -739,11 +765,7 @@ func _run_ai_turn() -> void:
 				best_hex  = h
 
 		if best_hex != ai_stack.hex:
-			var old_hex: Vector3i = ai_stack.hex
-			ai_stack.hex      = best_hex
-			ai_stack.position = tilemap.hex_to_local(best_hex)
-			_update_hex_map_for(ai_stack, old_hex)
-			EventBus.unit_moved.emit(ai_stack.stack_id, old_hex, best_hex)
+			await _animate_movement(ai_stack, best_hex, blocked)
 
 	# Attack if now adjacent
 	if _is_adjacent(ai_stack.hex, target.hex):
