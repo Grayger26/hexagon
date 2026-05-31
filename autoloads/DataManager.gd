@@ -24,6 +24,11 @@ func _ready() -> void:
 	_load_folder("res://resources/spells/",     spells)
 	_load_folder("res://resources/artifacts/",  artifacts)
 	_load_folder("res://resources/factions/",   factions)
+
+	# TEMP: create default test units when no .tres files exist yet
+	if units.is_empty():
+		_create_default_units()
+
 	print("[DataManager] Loaded — units:%d  heroes:%d  spells:%d  artifacts:%d  factions:%d"
 		% [units.size(), heroes.size(), spells.size(), artifacts.size(), factions.size()])
 
@@ -104,6 +109,79 @@ func get_artifacts_by_tier(tier: String) -> Array:
 		if artifact.tier == tier:
 			result.append(artifact)
 	return result
+
+
+# ── DEFAULT TEST UNITS (used until .tres files are created) ────────────────────
+
+func _create_default_units() -> void:
+	var swordsman := UnitData.new()
+	swordsman.id        = "swordsman"
+	swordsman.unit_name = "Swordsman"
+	swordsman.faction   = "castle"
+	swordsman.attack    = 7
+	swordsman.defense   = 7
+	swordsman.min_damage = 3
+	swordsman.max_damage = 7
+	swordsman.hp        = 25
+	swordsman.speed     = 4
+	swordsman.movement  = 5
+	swordsman.abilities = []
+	if ResourceLoader.exists("res://assets/sprites/swordman.png"):
+		swordsman.sprite_idle = load("res://assets/sprites/swordman.png")
+
+	var archer := UnitData.new()
+	archer.id          = "archer"
+	archer.unit_name   = "Archer"
+	archer.faction     = "castle"
+	archer.attack      = 6
+	archer.defense     = 3
+	archer.min_damage  = 2
+	archer.max_damage  = 4
+	archer.hp          = 10
+	archer.speed       = 4
+	archer.movement    = 4
+	archer.is_ranged   = true
+	archer.ammo        = 12
+	archer.abilities   = []
+	if ResourceLoader.exists("res://assets/sprites/archer.png"):
+		archer.sprite_idle = load("res://assets/sprites/archer.png")
+
+	var goblin := UnitData.new()
+	goblin.id          = "goblin"
+	goblin.unit_name   = "Goblin"
+	goblin.faction     = "stronghold"
+	goblin.attack      = 4
+	goblin.defense     = 2
+	goblin.min_damage  = 1
+	goblin.max_damage  = 2
+	goblin.hp          = 5
+	goblin.speed       = 5
+	goblin.movement    = 3
+	goblin.abilities   = []
+	if ResourceLoader.exists("res://assets/sprites/enemy_swordman.png"):
+		goblin.sprite_idle = load("res://assets/sprites/enemy_swordman.png")
+
+	var skeleton := UnitData.new()
+	skeleton.id          = "skeleton"
+	skeleton.unit_name   = "Skeleton"
+	skeleton.faction     = "necropolis"
+	skeleton.attack      = 5
+	skeleton.defense     = 4
+	skeleton.min_damage  = 2
+	skeleton.max_damage  = 5
+	skeleton.hp          = 20
+	skeleton.speed       = 6
+	skeleton.movement    = 5
+	skeleton.is_ranged   = true
+	skeleton.ammo        = 8
+	skeleton.abilities   = []
+	if ResourceLoader.exists("res://assets/sprites/enemy_archer.png"):
+		skeleton.sprite_idle = load("res://assets/sprites/enemy_archer.png")
+
+	units["swordsman"] = swordsman
+	units["archer"]    = archer
+	units["goblin"]    = goblin
+	units["skeleton"]  = skeleton
 
 
 func get_random_artifact_pool(count: int, rng: RandomNumberGenerator = null) -> Array:

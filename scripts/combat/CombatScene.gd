@@ -52,6 +52,11 @@ enum CombatPhase {
 
 var phase: CombatPhase = CombatPhase.SETUP
 
+## Guards against double initialization. _ready() defers a test-battle fallback
+## to handle editor-only launches, but if SceneManager calls
+## _on_scene_entered() first (the normal path), the deferred call is a no-op.
+var _initialized: bool = false
+
 
 # ─────────────────────────────────────────────
 #  RUNTIME DATA
@@ -92,6 +97,14 @@ var _log_lines: Array[String] = []
 # ─────────────────────────────────────────────
 
 func _on_scene_entered(data: Dictionary) -> void:
+	# Prevent double initialization. SceneManager calls this after _ready(),
+	# but the deferred editor fallback may also try to call it.
+	# First call wins — subsequent calls are silently ignored.
+	if _initialized:
+		print("[CombatScene] _on_scene_entered called more than once — ignored.")
+		return
+	_initialized = true
+
 	rng.randomize()
 	if data.is_empty():
 		_load_test_battle()
@@ -112,21 +125,52 @@ func _on_scene_entered(data: Dictionary) -> void:
 	_start_next_turn()
 
 
+func _deferred_editor_fallback() -> void:
+	## Called one frame after _ready. If SceneManager has not called
+	## _on_scene_entered by now, load a test battle as an editor-playground fallback.
+	if not _initialized:
+		print("[CombatScene] No SceneManager data received — loading test battle.")
+		_on_scene_entered({})
+
+
 func _ready() -> void:
 	# Wire static UI buttons
 	end_turn_btn.pressed.connect(_on_end_turn_pressed)
 	result_btn.pressed.connect(_on_result_continue)
 	result_panel.hide()
 
-	# If opened directly from the editor (no _on_scene_entered call yet)
-	if phase == CombatPhase.SETUP and all_stacks.is_empty():
-		_on_scene_entered({})
-	
+	# Set up a camera so the battlefield is centered on screen.
+	_setup_camera()
+
 	_cursor_basic = load(CURSOR_BASIC)
 	_cursor_melee = load(CURSOR_MELEE)
 	_cursor_range = load(CURSOR_RANGE)
 
 	_set_basic_cursor()
+
+	# Deferred fallback: if SceneManager doesn't call _on_scene_entered()
+	# (e.g. running from the editor), load a test battle on the next frame.
+	# This avoids double-initialising when SceneManager calls
+	# _on_scene_entered() immediately after _ready() returns.
+	call_deferred("_deferred_editor_fallback")
+
+
+# ─────────────────────────────────────────────
+#  CAMERA
+# ─────────────────────────────────────────────
+
+func _setup_camera() -> void:
+	## Create a camera that centres the battlefield on screen.
+	## The CombatTileMap sits at offset (8, 110) with scale 2.5×.
+	## The hex grid is 11 × 17 tiles of 32 px each — centre is around
+	## (8 + 11*32*2.5/2 ≈ 448, 110 + 17*32*2.5/2 ≈ 790).
+	## We nudge the Y upward a bit so the UI bar at the top doesn't clip the field.
+	var cam := Camera2D.new()
+	cam.name = "Camera2D"
+	cam.anchor_mode = Camera2D.ANCHOR_MODE_DRAG_CENTER
+	cam.position = Vector2(450, 420)
+	add_child(cam)
+	cam.make_current()
 
 
 # ─────────────────────────────────────────────
@@ -813,6 +857,22 @@ func _check_combat_over() -> bool:
 
 
 func _on_result_continue() -> void:
+	# Store combat results so the calling scene (e.g. AdventureMap)
+	# can update its state after the transition.
+	var player_survivors: Array[Dictionary] = []
+	for s: UnitStack in attacker_stacks:
+		if not s.is_dead():
+			player_survivors.append({"unit_id": s.unit_data.id, "count": s.count})
+
+	var result_str: String = "victory" if not player_survivors.is_empty() else "defeat"
+	var surv_parts: Array[String] = []
+	for sv: Dictionary in player_survivors:
+		surv_parts.append("%s:%d" % [sv.get("unit_id", "?"), sv.get("count", 0)])
+	print("[CombatScene] Combat ended — result=%s  survivors=[%s]" % [result_str, ", ".join(surv_parts)])
+
+	GameState.combat_result["result"] = result_str
+	GameState.combat_result["player_army"] = player_survivors
+
 	SceneManager.go_to(return_scene as SceneManager.Scene)
 
 

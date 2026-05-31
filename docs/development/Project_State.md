@@ -1,8 +1,8 @@
 # Project State — Hexagon Legends
 
-**Engine:** Godot 4.6.2  
-**Genre:** HoMM3-inspired turn-based strategy roguelike  
-**Last updated:** 2026-05-30
+**Engine:** Godot 4.6.2
+**Genre:** HoMM3-inspired turn-based strategy roguelike
+**Last updated:** 2026-05-31
 
 ---
 
@@ -11,10 +11,10 @@
 ### Autoloads (6)
 | System | Purpose |
 |---|---|
-| `GameState` | Single source of truth for active run (phase, resources, hero, day/week/month) |
+| `GameState` | Single source of truth for active run (phase, resources, hero, day/week/month, **player_army**, **map_enemies**, **combat_result**) |
 | `EventBus` | Global signal bus — all decoupled communication |
-| `DataManager` | Loads/caches `.tres` resource files at startup |
-| `SceneManager` | Scene transitions with black fade; 14 registered scene paths |
+| `DataManager` | Loads/caches `.tres` resource files at startup; **creates default test units if no files exist** |
+| `SceneManager` | Scene transitions with black fade; **scene preservation** (hides AdventureMap during combat, restores on return); 14 registered scene paths |
 | `SaveManager` | Run save (single slot) + meta save (permanent) with JSON I/O |
 | `AudioManager` | Music cross-fade + SFX pool |
 
@@ -25,43 +25,44 @@
 - `ArtifactData` — Artifact stats, slot, tier, bonuses
 - `SpellData` — Spell stats, school, damage formula, target type
 
+No `.tres` files exist yet — all units use runtime-created defaults via `DataManager._create_default_units()`.
+
 ### Core Systems
 - `StateMachine` (Node) — Reusable FSM base with `State` inner class, transitions, input routing
 - `CombatTurnManager` (RefCounted) — Speed-sorted turn queue, wait queue, round management
 - `HexGrid` (RefCounted) — Cube-coordinate hex grid (pointy-top, odd-r), A* pathfinding, LoS
 - `SquareGrid` (RefCounted) — 8-directional square grid for adventure map, Chebyshev A*
 - `DamageCalculator` (RefCounted) — Static HoMM3 damage formula with luck, morale, ranged penalty
-- **`FogOfWar`** (Sprite2D + shader) — Pixelated fog overlay using noise texture (FastNoiseLite) for organic appearance. Red channel of a 1px-per-tile image drives transparency via shader (`a -= r`). Three states: UNSEEN (fully fogged), EXPLORED (fully clear), with pathfinding blocked through unexplored fog.
+- `FogOfWar` (Sprite2D + shader) — Pixelated fog overlay using noise texture, BFS gradient edge, Euclidean visibility
+
+### Cross-Scene Combat Flow
+- `GameState.player_army: Array[Dictionary]` — player's current army, persisted across AdventureMap ↔ CombatScene transitions
+- `GameState.map_enemies: Dictionary` — enemies placed on adventure map tiles, keyed by `"x,y"` string
+- `GameState.combat_result: Dictionary` — communication channel: AdventureMap writes `enemy_key`, CombatScene writes `result` + `player_army`, AdventureMap reads on re-entry
+- **Scene preservation** — AdventureMap is hidden (not freed) during combat via SceneManager; restored on return with all state intact (obstacles, player position, fog, HUD, enemy visibility)
+- `MainMenu` bypasses missing FactionSelect scene — "New Run" calls `GameState.init_run()` directly and transitions to `AdventureMap`
+- `AdventureMap` auto-initializes `GameState` if `run_active` is false (handles running from editor)
 
 ### Shaders
-- `fog_of_war.gdshader` — CanvasItem shader for fog of war. Samples a simplex-noise texture, uses the fog image's red channel as a transparency mask, replaces colour with a dark blue-grey tinted noise for a dense mist effect.
+- `fog_of_war.gdshader` — CanvasItem shader for fog of war, noise-driven blue-grey mist
 
 ---
 
 ## Milestone Status
 
 ### Milestone 0 — Foundation (COMPLETE)
-- All 6 autoloads, 5 resource types, folder structure, StateMachine base class
+All 6 autoloads, 5 resource types, folder structure, StateMachine base class, **default unit data generation**
 
 ### Milestone 1 — Combat Prototype (COMPLETE)
-- HexGrid with A* pathfinding, LoS, BFS reachability
-- CombatTileMap with 4 layers (terrain, highlight, cursor, attack positions)
-- UnitStack with HP model, effects, turn reset, visual badge
-- CombatTurnManager with speed queue, wait/defend, round cycling
-- DamageCalculator with full HoMM3 formula
-- CombatScene with animated movement, melee attack-direction picker, ranged combat, AI, combat over detection, test battle
+HexGrid with A*/LoS/BFS, CombatTileMap with 4 layers, UnitStack with HP/effects, CombatTurnManager with speed queue, DamageCalculator with full HoMM3 formula, CombatScene with animated movement/melee/ranged/AI/combat-end, test battle, Camera2D
 
 ### Milestone 2 — Full Combat (NOT STARTED)
-- Spells, hero integration, war machines, siege, special abilities, advanced AI — all unimplemented
-- Morale/luck code exists in CombatScene but has no visible feedback
-- Large (2-hex) units not implemented
+Spells, hero integration, war machines, siege, special abilities, advanced AI — all unimplemented. Morale/luck code exists in CombatScene but has no visible feedback. Large (2-hex) units not implemented.
 
 ### Milestone 3 — Adventure Map (PARTIALLY COMPLETE)
-- SquareGrid with 8-dir A* pathfinding
-- AdventureMap with 50×35 grid, obstacles, movement points, path preview, click-to-move animation, Camera2D, HUD (movement label, tile info, End Turn button)
-- **Fog of war** — Sprite2D + shader overlay using FastNoiseLite noise. Binary unseen/explored visibility, vision radius of 5 tiles, pathfinding blocked through fog, smooth tile-by-tile reveal during movement
-- No fog of war save/load integration (GameState.explored_tiles serialized but not wired to adventure map load)
-- No map objects, no time system, no full HUD, no terrain variety
+**Implemented:** SquareGrid with A*, AdventureMap with 50×35 grid/movement/path preview/Camera2D/HUD, Fog of War with noise shader/BFS gradient/Euclidean radius, enemy placement on map tiles, combat encounter triggers, **scene preservation (AdventureMap persists across battles with all state intact)**, deterministic obstacle seeding, combat result processing on return, **free camera edge-scrolling**, **space to snap camera to player**, **enemy sprites hidden by fog of war**, **player position saved/restored across combat**, auto-init for editor testing
+
+**Missing:** map objects (mines, chests, towns), time system, full HUD, terrain variety, seeded generation, underground layer, fog save/load, hero stats panel
 
 ### Milestone 4+ — Not started
 
@@ -74,7 +75,18 @@
 - **Combat phase enum** — SETUP → PLAYER_SELECT/MOVE/ATTACK → ENEMY_TURN → RESOLVE_DAMAGE → COMBAT_OVER
 - **Adventure map phase enum** — IDLE → MOVING (input blocked during animation)
 - **A* tie-breaking** — Cardinal directions explored before diagonals to avoid zigzag paths
-- **Path arrows** — Forward-looking (each tile shows direction to next tile), atlas layout NW/N/NE on row 0, W/+/E on row 1, SW/S/SE on row 2
-- **Fog of war rendering** — Sprite2D with procedural pixel image (1px per tile) scaled to cover map, ShaderMaterial with noise-driven fog colour, red channel as transparency mask. NOT a TileMapLayer overlay (avoids per-tile rendering cost and enables smooth gradient edges and noise effects)
-- **Visibility radius** — Euclidean distance (circular), not Chebyshev (diamond), for a natural circular reveal edge
-- **Pathfinding blocked by fog** — Combined cache of obstacles + unexplored tiles rebuilt after each fog update. Prevents A* from routing through unseen terrain
+- **Path arrows** — Forward-looking, 9-arrow atlas layout
+- **Fog of war rendering** — Sprite2D with procedural pixel image, ShaderMaterial with noise, red channel as transparency mask, linear filtering for smooth tile boundaries
+- **Visibility radius** — Euclidean distance (circular) for natural reveal edge
+- **Pathfinding blocked by fog** — Combined cache of obstacles + unexplored tiles rebuilt after each fog update
+- **Map enemies stored in GameState** — Dictionary keyed by `"x,y"` tile string, each entry has `unit_id`, `count`, `tile`
+- **Combat result back-channel** — `GameState.combat_result` dictionary shared between AdventureMap and CombatScene; AdventureMap writes `enemy_key` before transition, CombatScene adds `result`/`player_army`, AdventureMap reads on re-entry
+- **AdventureMap camera** — position_smoothing disabled, movement tween drives camera + sprite in parallel; free edge-scrolling when idle
+- **SceneManager fade fallback** — `go_to()` skips `await` when `fade_rect` is invalid, preventing one-frame yield glitch
+- **Scene preservation** — AdventureMap is hidden (not freed) during combat and restored after; avoids map regeneration, player position reset, and state loss on return from combat
+- **CombatScene deferred init** — `_ready()` defers test-battle creation via `call_deferred()` so SceneManager's `_on_scene_entered()` delivers real army data first; `_initialized` flag prevents double initialization
+- **AdventureMap _initialized guard** — `_ready()` uses `_initialized` flag to skip re-init when scene is re-added to tree after preservation (Godot 4 fires `_ready()` on reparent)
+- **Player position saved across combat** — `player_tile` stored in `GameState.combat_result.saved_player_tile` before combat, restored in `_process_combat_result()` after combat
+- **Enemy visibility gated by fog** — enemy sprites are hidden unless their tile is in `GameState.explored_tiles`, updated on fog recalculation and enemy sprite sync
+- **Deterministic obstacle placement** — `_generate_map()` seeds RNG from `GameState.run_seed` so obstacles remain consistent when preserved scene is restored
+- **Default unit data** — `DataManager._create_default_units()` creates 4 test units (swordsman, archer, goblin, skeleton) when no `.tres` files exist

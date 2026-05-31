@@ -23,6 +23,19 @@ var resources: Dictionary = {
 
 var player_hero: Resource = null
 
+## Player's current army — Array of {unit_id: String, count: int}
+var player_army: Array[Dictionary] = []
+
+## Enemies placed on the adventure map — keyed by "x,y" tile string.
+## Value: {unit_id: String, count: int, tile: Vector2i}
+var map_enemies: Dictionary = {}
+
+## Temporary cross-scene storage for combat results.
+## Written by CombatScene before returning, read by AdventureMap on re-entry.
+## Keys: "result" (victory/defeat), "player_army" (Array[Dictionary]),
+##        "enemy_key" (String — set by AdventureMap before transition)
+var combat_result: Dictionary = {}
+
 var map_size:          Vector2i        = Vector2i(64, 64)
 var explored_tiles:    Array[Vector2i] = []
 var mines_owned:       Dictionary      = {}
@@ -64,7 +77,12 @@ func init_run(p_faction: String, p_difficulty: String, p_seed: int) -> void:
 		"gold_earned": 0, "creatures_killed": 0,
 		"spells_cast": 0, "artifacts_found": 0,
 	}
-	player_hero = null
+	player_hero  = null
+	player_army  = []
+	map_enemies  = {}
+	combat_result = {}
+
+	init_default_run_data()
 
 
 func load_from_dict(data: Dictionary) -> void:
@@ -97,3 +115,31 @@ func to_dict() -> Dictionary:
 func increment_stat(key: String, amount: int = 1) -> void:
 	if stats.has(key):
 		stats[key] = (stats[key] as int) + amount
+
+
+# ── DEFAULT RUN DATA ──────────────────────────────────────────────────────────
+
+## Sets up a starting player army and places enemies on the adventure map.
+## Called from init_run(). Replace with proper data-driven setup later.
+func init_default_run_data() -> void:
+	print("[GameState] init_default_run_data() called — run_active=%s" % run_active)
+	player_army = [
+		{"unit_id": "swordsman", "count": 20},
+		{"unit_id": "archer",    "count": 15},
+		{"unit_id": "swordsman", "count": 8},
+	]
+
+	map_enemies = {
+		_enemy_key_from_ints(30, 18): {"unit_id": "goblin", "count": 30, "tile": Vector2i(30, 18)},
+		_enemy_key_from_ints(33, 22): {"unit_id": "goblin", "count": 45, "tile": Vector2i(33, 22)},
+	}
+
+
+## Build a map-enemy key from tile coordinates.
+static func _enemy_key_from_ints(x: int, y: int) -> String:
+	return "%d,%d" % [x, y]
+
+
+## Build a map-enemy key from a Vector2i tile.
+static func enemy_key(tile: Vector2i) -> String:
+	return "%d,%d" % [tile.x, tile.y]

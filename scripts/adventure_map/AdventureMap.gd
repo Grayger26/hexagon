@@ -1,6 +1,7 @@
 ## AdventureMap.gd
 ## Main controller for the adventure map prototype.
-## Handles tilemap rendering, player movement, path preview, and movement points.
+## Handles tilemap rendering, player movement, path preview, movement points,
+## enemy encounters, and combat transitions.
 extends Node2D
 
 
@@ -27,6 +28,7 @@ const MAX_MOVE_POINTS: int = 1500
 const SQUARE_TILES_PATH: String = "res://assets/tilemaps/square_tiles.png"
 const PATH_ARROWS_PATH: String = "res://assets/tilemaps/path_arrows.png"
 const PLAYER_SPRITE_PATH: String = "res://assets/sprites/swordman.png"
+const ENEMY_SPRITE_PATH: String = "res://assets/sprites/enemy_swordman.png"
 
 # ── SQUARE TILES ATLAS COORDS ────────────────────────────────────────────────────
 # square_tiles.png is 64x64, 4 tiles in a 2x2 grid, each 32x32.
@@ -87,6 +89,16 @@ var _player_sprite: Sprite2D
 var _fog_sprite:    Sprite2D
 var _fog_image: Image
 var _camera:   Camera2D
+
+## Parent node for all map-enemy sprites.
+var _enemy_node: Node2D
+## Map from enemy key ("x,y") to its Sprite2D node.
+var _enemy_sprites: Dictionary = {}
+
+## Guards against _ready() firing again when the scene is re-added
+## to the tree after scene preservation (hide/restore across combat).
+var _initialized: bool = false
+
 var _move_label:    Label
 var _end_turn_btn:  Button
 var _tile_info:     Label
@@ -95,14 +107,50 @@ var _tile_info:     Label
 # ── ENTRY ────────────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
+	# Guard against _ready() firing again when the preserved scene is
+	# re-added to the tree after combat — all state is intact.
+	if _initialized:
+		return
+	_initialized = true
+
+	# Auto-initialize game state if it hasn't been started yet
+	# (handles running AdventureMap directly from the editor).
+	if not GameState.run_active:
+		print("[AdventureMap] run_active=false — initialising new run")
+		GameState.init_run("castle", "knight", randi())
+	else:
+		print("[AdventureMap] run_active=true — using existing run state")
+		_print_army("player_army at _ready", GameState.player_army)
+		print("[AdventureMap] map_enemies at _ready: " + str(GameState.map_enemies.keys()))
+
 	_build_tilemaps()
 	_generate_map()
 	_setup_camera()
 	_setup_player()
+	_setup_enemy_node()
 	_setup_fog()
 	_setup_ui()
 	_refresh_hud()
 	_update_fog()
+	# Process any pending combat result BEFORE setting up enemies
+	# so the defeated enemy's sprite is never created.
+	_process_combat_result()
+	_setup_enemies()
+
+## Called by SceneManager each time this scene is entered.
+## On first load (from MainMenu): data is empty, combat_result is empty -> no-op.
+## On restore (from CombatScene, after scene-preservation): processes combat
+## result to remove defeated enemies, then syncs enemy sprites.
+func _on_scene_entered(data: Dictionary) -> void:
+	# Reset phase in case it was left as MOVING after combat transition
+	phase = MapPhase.IDLE
+	_process_combat_result()
+	_setup_enemies()
+	_refresh_hud()
+	print("[AdventureMap] _on_scene_entered - map_enemies=%s" % str(GameState.map_enemies.keys()))
+
+
+
 
 
 # ── TILEMAP SETUP ────────────────────────────────────────────────────────────────
@@ -232,9 +280,16 @@ func _generate_map() -> void:
 		for row: int in range(MAP_ROWS):
 			_terrain_layer.set_cell(Vector2i(col, row), SRC_SQUARE, TILE_GROUND)
 
+	# Build a set of tiles that enemy units occupy — obstacles must not block them.
+	var enemy_tiles: Dictionary = {}
+	for key: Variant in GameState.map_enemies:
+		var entry: Dictionary = GameState.map_enemies[key] as Dictionary
+		enemy_tiles[entry["tile"] as Vector2i] = true
+
 	# Place obstacles in the central area, avoiding the player start tile
+	# and any tiles occupied by map enemies.
 	var rng := RandomNumberGenerator.new()
-	rng.randomize()
+	rng.seed = _get_map_seed()
 
 	var candidates: Array[Vector2i] = []
 	for col: int in range(2, MAP_COLS - 2):
@@ -242,12 +297,19 @@ func _generate_map() -> void:
 			var tile := Vector2i(col, row)
 			if tile == START_TILE:
 				continue
+			if enemy_tiles.has(tile):
+				continue
 			# Avoid blocking immediate neighbour around the start
 			if SquareGrid.chebyshev_distance(tile, START_TILE) <= 2:
 				continue
 			candidates.append(tile)
 
-	candidates.shuffle()
+	# Fisher-Yates shuffle using the seeded RNG for deterministic obstacle placement
+	for i in range(candidates.size() - 1, 0, -1):
+		var j := rng.randi_range(0, i)
+		var tmp = candidates[i]
+		candidates[i] = candidates[j]
+		candidates[j] = tmp
 
 	var placed: int = 0
 	for tile: Vector2i in candidates:
@@ -260,17 +322,47 @@ func _generate_map() -> void:
 
 # ── CAMERA SETUP ─────────────────────────────────────────────────────────────────
 
+## Distance from screen edge (px) that triggers edge-scrolling.
+const EDGE_SCROLL_MARGIN: int = 20
+
+## Camera scroll speed when edge-scrolling (px/sec).
+const SCROLL_SPEED: float = 1000.0
+
 func _setup_camera() -> void:
 	_camera = Camera2D.new()
 	_camera.name = "Camera2D"
 	_camera.anchor_mode = Camera2D.ANCHOR_MODE_DRAG_CENTER
-	_camera.position_smoothing_enabled = true
-	_camera.position_smoothing_speed = 8.0
+	# Smoothing is disabled — the movement tween handles camera smoothly.
+	_camera.position_smoothing_enabled = false
 	add_child(_camera)
 	_camera.make_current()
 
 
-# ── PLAYER SETUP ─────────────────────────────────────────────────────────────────
+func _process(delta: float) -> void:
+	# Edge-scrolling — only when not moving
+	if phase != MapPhase.IDLE:
+		return
+
+	var viewport := get_viewport()
+	if viewport == null:
+		return
+	var mouse_pos: Vector2 = viewport.get_mouse_position()
+	var screen_size: Vector2 = viewport.get_visible_rect().size
+
+	var scroll: Vector2 = Vector2.ZERO
+
+	if mouse_pos.x < EDGE_SCROLL_MARGIN:
+		scroll.x -= 1.0
+	elif mouse_pos.x > screen_size.x - EDGE_SCROLL_MARGIN:
+		scroll.x += 1.0
+
+	if mouse_pos.y < EDGE_SCROLL_MARGIN:
+		scroll.y -= 1.0
+	elif mouse_pos.y > screen_size.y - EDGE_SCROLL_MARGIN:
+		scroll.y += 1.0
+
+	if scroll != Vector2.ZERO:
+		_camera.position += scroll.normalized() * SCROLL_SPEED * delta
 
 func _setup_player() -> void:
 	_player_sprite = Sprite2D.new()
@@ -294,6 +386,160 @@ func _sync_player_position() -> void:
 	if _player_sprite:
 		_player_sprite.position = pos
 	_camera.position = pos
+
+
+## Snap camera focus to the player's current tile.
+func _center_camera_on_player() -> void:
+	_camera.position = _tile_to_local(player_tile)
+
+
+# ── COMBAT RESULT HANDLING ─────────────────────────────────────────────────────
+
+func _process_combat_result() -> void:
+	## Read GameState.combat_result after returning from CombatScene
+	## and update the adventure map state accordingly.
+	var cr: Dictionary = GameState.combat_result
+	if cr.is_empty():
+		return
+
+	var result: String    = cr.get("result", "") as String
+	var enemy_key: String = cr.get("enemy_key", "") as String
+	var player_survivors: Array = cr.get("player_army", []) as Array
+
+	print("[AdventureMap] Combat result: %s  enemy_key=%s  survivors=%d" % [result, enemy_key, player_survivors.size()])
+
+	if result == "victory" and not enemy_key.is_empty():
+		# Remove the defeated enemy from data and visuals
+		GameState.map_enemies.erase(enemy_key)
+		_remove_enemy_sprite(enemy_key)
+		# Update the player's army to reflect survivors
+		GameState.player_army = player_survivors
+	elif result == "defeat":
+		# Keep the enemy on the map, but update the player's army
+		GameState.player_army = player_survivors
+
+	# Restore the player's tile position saved before combat,
+	# and sync the player sprite and camera to match.
+	var saved_tile: Vector2i = cr.get("saved_player_tile", player_tile) as Vector2i
+	player_tile = saved_tile
+	_sync_player_position()
+
+	# Clear the combat result so it doesn't re-process on the next entry
+	GameState.combat_result = {}
+
+
+# ── ENEMY SETUP (ADVENTURE MAP) ────────────────────────────────────────────────
+
+func _setup_enemy_node() -> void:
+	_enemy_node = Node2D.new()
+	_enemy_node.name = "EnemyLayer"
+	_enemy_node.z_index = 2  # same as player sprite
+	add_child(_enemy_node)
+
+
+func _setup_enemies() -> void:
+	## Sync enemy sprites with GameState.map_enemies.
+	## Creates sprites for enemies in the data and removes sprites for enemies
+	## that have been removed from the data (e.g. after combat victory).
+	if not is_instance_valid(_enemy_node):
+		return
+
+	# Load the enemy sprite texture once
+	var enemy_texture: Texture2D = null
+	if ResourceLoader.exists(ENEMY_SPRITE_PATH):
+		enemy_texture = load(ENEMY_SPRITE_PATH) as Texture2D
+
+	# Track which keys are still in the data so we can remove stale sprites.
+	var keep: Dictionary = {}
+
+	# Create or reposition sprites for current map enemies
+	for key: Variant in GameState.map_enemies:
+		var key_str: String = String(key)
+		var entry: Dictionary  = GameState.map_enemies[key] as Dictionary
+		var tile: Vector2i     = entry["tile"] as Vector2i
+		keep[key_str] = true
+
+		if _enemy_sprites.has(key_str) and is_instance_valid(_enemy_sprites[key_str]):
+			# Sprite already exists — just update position
+			_enemy_sprites[key_str].position = _tile_to_local(tile)
+		else:
+			# Create new sprite
+			var sprite := Sprite2D.new()
+			sprite.name = "Enemy_" + key_str
+			sprite.scale = Vector2(MAP_SCALE, MAP_SCALE)
+			sprite.position = _tile_to_local(tile)
+			if enemy_texture != null:
+				sprite.texture = enemy_texture
+			else:
+				var fallback_img := Image.create(
+					SquareGrid.TILE_SIZE, SquareGrid.TILE_SIZE, false, Image.FORMAT_RGBA8)
+				fallback_img.fill(Color(0.8, 0.1, 0.1))
+				sprite.texture = ImageTexture.create_from_image(fallback_img)
+			_enemy_node.add_child(sprite)
+			_enemy_sprites[key_str] = sprite
+
+	# Remove sprites for enemies no longer in the data
+	var to_remove: Array[String] = []
+	for existing_key: Variant in _enemy_sprites:
+		if not keep.has(String(existing_key)):
+			to_remove.append(String(existing_key))
+	for rk: String in to_remove:
+		print("[AdventureMap] Removing stale enemy sprite: %s" % rk)
+		_remove_enemy_sprite(rk)
+
+	# Sync visibility with fog after syncing sprites
+	_update_enemy_visibility()
+
+
+func _remove_enemy_sprite(enemy_key: String) -> void:
+	## Remove the sprite for a map enemy (called after combat victory).
+	if not _enemy_sprites.has(enemy_key):
+		return
+	var sprite: Sprite2D = _enemy_sprites[enemy_key] as Sprite2D
+	if is_instance_valid(sprite):
+		sprite.queue_free()
+	_enemy_sprites.erase(enemy_key)
+
+
+## Hide enemy sprites on tiles that haven't been explored yet (fog of war).
+func _update_enemy_visibility() -> void:
+	if not is_instance_valid(_enemy_node):
+		return
+	for key: Variant in _enemy_sprites:
+		var sprite: Sprite2D = _enemy_sprites[key] as Sprite2D
+		if not is_instance_valid(sprite):
+			continue
+		var entry: Dictionary = GameState.map_enemies.get(key, {}) as Dictionary
+		var tile: Vector2i = entry.get("tile", Vector2i(-1, -1)) as Vector2i
+		sprite.visible = tile in GameState.explored_tiles
+
+
+# ── COMBAT TRIGGER ─────────────────────────────────────────────────────────────
+
+func _trigger_combat(enemy_key: String) -> void:
+	## Transition to CombatScene with the player's army vs the enemy at enemy_key.
+	if phase != MapPhase.IDLE:
+		return
+	phase = MapPhase.MOVING  # block further input during transition
+
+	var enemy: Dictionary = GameState.map_enemies[enemy_key] as Dictionary
+
+	print("[AdventureMap] _trigger_combat  enemy=%s  count=%d" % [enemy_key, enemy.get("count", 30)])
+	_print_army("  sending army", GameState.player_army)
+
+	# Store combat context so CombatScene can write the result back.
+	# Save player_tile so we can restore the player position after combat.
+	GameState.combat_result = {
+		"enemy_key": enemy_key,
+		"saved_player_tile": player_tile,
+	}
+
+	var data: Dictionary = {
+		"attacker_army": GameState.player_army.duplicate(true),
+		"defender_army": [{"unit_id": "goblin", "count": enemy.get("count", 30)}],
+		"return_scene": SceneManager.Scene.ADVENTURE_MAP,
+	}
+	SceneManager.go_to(SceneManager.Scene.COMBAT, data)
 
 
 # ── FOG OF WAR ─────────────────────────────────────────────────────────────────
@@ -391,6 +637,8 @@ func _update_fog() -> void:
 
 	# Rebuild pathfinding blocked cache to exclude unreachable fog tiles
 	_rebuild_pathfinding_blocked()
+	# Sync enemy visibility with explored tiles
+	_update_enemy_visibility()
 
 
 func _rebuild_pathfinding_blocked() -> void:
@@ -466,6 +714,13 @@ func _refresh_hud() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if phase == MapPhase.MOVING:
 		return
+
+	# Camera control: Space snaps to player
+	if event is InputEventKey:
+		var key_event := event as InputEventKey
+		if key_event.pressed and key_event.keycode == KEY_SPACE:
+			_center_camera_on_player()
+			return
 
 	var world_pos: Vector2 = get_global_mouse_position()
 
@@ -602,17 +857,25 @@ func _animate_movement(path: Array[Vector2i]) -> void:
 	# Animate step by step, revealing fog after each tile
 	for step: Vector2i in path:
 		player_tile = step
+		var target_pos: Vector2 = _tile_to_local(step)
 		var tween := create_tween()
+		tween.set_parallel(true)
 		tween.set_trans(Tween.TRANS_LINEAR)
 		tween.set_ease(Tween.EASE_IN_OUT)
-		tween.tween_property(_player_sprite, "position", _tile_to_local(step), 0.1)
+		tween.tween_property(_player_sprite, "position", target_pos, 0.1)
+		tween.tween_property(_camera, "position", target_pos, 0.1)
 		await tween.finished
 
-		_sync_player_position()
 		_update_fog()
 
 	phase = MapPhase.IDLE
 	_refresh_hud()
+
+	# After movement completes, check if the player landed on an enemy tile.
+	# If so, trigger combat immediately.
+	var enemy_key: String = GameState.enemy_key(player_tile)
+	if GameState.map_enemies.has(enemy_key):
+		_trigger_combat(enemy_key)
 
 
 # ── END TURN ─────────────────────────────────────────────────────────────────────
@@ -626,6 +889,21 @@ func _on_end_turn() -> void:
 
 func _is_in_bounds(tile: Vector2i) -> bool:
 	return tile.x >= 0 and tile.x < MAP_COLS and tile.y >= 0 and tile.y < MAP_ROWS
+
+
+## Returns a deterministic seed for map generation so obstacles stay in
+## the same positions when the map is regenerated (e.g. after combat).
+## Uses GameState.run_seed as the base so each run has a unique layout.
+func _get_map_seed() -> int:
+	return GameState.run_seed ^ 0xAD7E9
+
+
+func _print_army(label: String, army: Array) -> void:
+	var parts: Array[String] = []
+	for entry: Variant in army:
+		var e: Dictionary = entry as Dictionary
+		parts.append("%s:%d" % [e.get("unit_id", "?"), e.get("count", 0)])
+	print("[AdventureMap] %s — %s" % [label, ", ".join(parts)])
 
 
 # ── FALLBACK TEXTURES (for development without image files) ──────────────────────

@@ -23,7 +23,9 @@ func _ready() -> void:
 
 func _on_new_run() -> void:
 	AudioManager.play_sfx("button_click")
-	SceneManager.go_to(SceneManager.Scene.FACTION_SELECT)
+	# Initialize a new run (FactionSelect scene not built yet — skip to map)
+	GameState.init_run("castle", "knight", randi())
+	SceneManager.go_to(SceneManager.Scene.ADVENTURE_MAP)
 
 
 func _on_continue() -> void:
