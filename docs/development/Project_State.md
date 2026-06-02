@@ -2,7 +2,7 @@
 
 **Engine:** Godot 4.6.2
 **Genre:** HoMM3-inspired turn-based strategy roguelike
-**Last updated:** 2026-05-31
+**Last updated:** 2026-06-02
 
 ---
 
@@ -34,12 +34,13 @@ No `.tres` files exist yet — all units use runtime-created defaults via `DataM
 - `SquareGrid` (RefCounted) — 8-directional square grid for adventure map, Chebyshev A*
 - `DamageCalculator` (RefCounted) — Static HoMM3 damage formula with luck, morale, ranged penalty
 - `FogOfWar` (Sprite2D + shader) — Pixelated fog overlay using noise texture, BFS gradient edge, Euclidean visibility
+- `RoadGenerator` (RefCounted) — Road network generation using **hybrid terrain system**: cardinal roads via `set_cells_terrain_connect()`, diagonal tiles + corner caps placed manually with `set_cell()`
 
 ### Cross-Scene Combat Flow
 - `GameState.player_army: Array[Dictionary]` — player's current army, persisted across AdventureMap ↔ CombatScene transitions
 - `GameState.map_enemies: Dictionary` — enemies placed on adventure map tiles, keyed by `"x,y"` string
 - `GameState.combat_result: Dictionary` — communication channel: AdventureMap writes `enemy_key`, CombatScene writes `result` + `player_army`, AdventureMap reads on re-entry
-- **Scene preservation** — AdventureMap is hidden (not freed) during combat via SceneManager; restored on return with all state intact (obstacles, player position, fog, HUD, enemy visibility)
+- **Scene preservation** — AdventureMap is hidden (not freed) during combat via SceneManager; restored on return with all state intact (obstacles, player position, fog, HUD, enemy visibility, road tiles)
 - `MainMenu` bypasses missing FactionSelect scene — "New Run" calls `GameState.init_run()` directly and transitions to `AdventureMap`
 - `AdventureMap` auto-initializes `GameState` if `run_active` is false (handles running from editor)
 
@@ -51,7 +52,7 @@ No `.tres` files exist yet — all units use runtime-created defaults via `DataM
 ## Milestone Status
 
 ### Milestone 0 — Foundation (COMPLETE)
-All 6 autoloads, 5 resource types, folder structure, StateMachine base class, **default unit data generation**
+All 6 autoloads, 5 resource types, folder structure, StateMachine base class, default unit data generation
 
 ### Milestone 1 — Combat Prototype (COMPLETE)
 HexGrid with A*/LoS/BFS, CombatTileMap with 4 layers, UnitStack with HP/effects, CombatTurnManager with speed queue, DamageCalculator with full HoMM3 formula, CombatScene with animated movement/melee/ranged/AI/combat-end, test battle, Camera2D
@@ -60,7 +61,20 @@ HexGrid with A*/LoS/BFS, CombatTileMap with 4 layers, UnitStack with HP/effects,
 Spells, hero integration, war machines, siege, special abilities, advanced AI — all unimplemented. Morale/luck code exists in CombatScene but has no visible feedback. Large (2-hex) units not implemented.
 
 ### Milestone 3 — Adventure Map (PARTIALLY COMPLETE)
-**Implemented:** SquareGrid with A*, AdventureMap with 50×35 grid/movement/path preview/Camera2D/HUD, Fog of War with noise shader/BFS gradient/Euclidean radius, enemy placement on map tiles, combat encounter triggers, **scene preservation (AdventureMap persists across battles with all state intact)**, deterministic obstacle seeding, combat result processing on return, **free camera edge-scrolling**, **space to snap camera to player**, **enemy sprites hidden by fog of war**, **player position saved/restored across combat**, auto-init for editor testing
+**Implemented:**
+- SquareGrid with A*, AdventureMap with 50×35 grid/movement/path preview/Camera2D/HUD
+- Fog of War with noise shader/BFS gradient/Euclidean radius
+- Enemy placement on map tiles, combat encounter triggers
+- Scene preservation (AdventureMap persists across battles with all state intact)
+- Deterministic obstacle seeding, combat result processing on return
+- Free camera edge-scrolling, Space to snap camera to player
+- Enemy sprites hidden by fog of war, player position saved/restored across combat
+- Auto-init for editor testing
+- **Road generation system** using hybrid terrain system:
+  - Cardinal roads placed via `set_cells_terrain_connect()` — auto-selects straights, corners, T-junctions, crossroads
+  - Diagonal roads (\ and /) placed manually with `set_cell()` using correct atlas tiles
+  - Corner cap fill tiles at cardinal positions around diagonal tiles to smooth staircase visual
+  - All tile positions deterministic per run seed; persiste across combat via scene preservation
 
 **Missing:** map objects (mines, chests, towns), time system, full HUD, terrain variety, seeded generation, underground layer, fog save/load, hero stats panel
 
@@ -90,3 +104,4 @@ Spells, hero integration, war machines, siege, special abilities, advanced AI �
 - **Enemy visibility gated by fog** — enemy sprites are hidden unless their tile is in `GameState.explored_tiles`, updated on fog recalculation and enemy sprite sync
 - **Deterministic obstacle placement** — `_generate_map()` seeds RNG from `GameState.run_seed` so obstacles remain consistent when preserved scene is restored
 - **Default unit data** — `DataManager._create_default_units()` creates 4 test units (swordsman, archer, goblin, skeleton) when no `.tres` files exist
+- **Hybrid road generation** — Cardinal roads placed via Godot's TileSet terrain system for auto tile selection; pure diagonal tiles placed manually with `set_cell()` (terrain system cannot resolve corner-only peering bits); corner cap fill tiles placed at cardinal offsets around diagonal tiles using Dictionary-based dedup to avoid overwriting existing road tiles

@@ -29,6 +29,7 @@ const SQUARE_TILES_PATH: String = "res://assets/tilemaps/square_tiles.png"
 const PATH_ARROWS_PATH: String = "res://assets/tilemaps/path_arrows.png"
 const PLAYER_SPRITE_PATH: String = "res://assets/sprites/swordman.png"
 const ENEMY_SPRITE_PATH: String = "res://assets/sprites/enemy_swordman.png"
+const MAP_ROADS_SCENE_PATH: String = "res://scenes/tilemaps/map_roads.tscn"
 
 # ── SQUARE TILES ATLAS COORDS ────────────────────────────────────────────────────
 # square_tiles.png is 64x64, 4 tiles in a 2x2 grid, each 32x32.
@@ -84,6 +85,7 @@ var _moveable_tiles: Dictionary = {}         # explored + gradient zone — set 
 # ── CHILD NODES ──────────────────────────────────────────────────────────────────
 
 var _terrain_layer: TileMapLayer
+var _road_layer:    TileMapLayer
 var _path_layer:    TileMapLayer
 var _player_sprite: Sprite2D
 var _fog_sprite:    Sprite2D
@@ -164,6 +166,9 @@ func _build_tilemaps() -> void:
 	_terrain_layer.tile_set = _build_terrain_tileset()
 	add_child(_terrain_layer)
 
+	# --- Road layer (sits above terrain, below fog and path) ---
+	_road_layer = _make_road_layer()
+
 	# --- Path arrow layer (sits above terrain) ---
 	_path_layer = TileMapLayer.new()
 	_path_layer.name = "PathLayer"
@@ -221,6 +226,27 @@ func _build_arrow_tileset() -> TileSet:
 
 	ts.add_source(source, SRC_ARROW)
 	return ts
+
+
+## Create the road TileMapLayer from the pre-configured map_roads.tscn scene.
+## Falls back to a blank TileMapLayer if the scene is missing.
+func _make_road_layer() -> TileMapLayer:
+	if ResourceLoader.exists(MAP_ROADS_SCENE_PATH):
+		var packed := load(MAP_ROADS_SCENE_PATH) as PackedScene
+		if packed != null:
+			var layer: TileMapLayer = packed.instantiate()
+			layer.name = "RoadLayer"
+			layer.z_index = 0
+			layer.scale = Vector2(MAP_SCALE, MAP_SCALE)
+			add_child(layer)
+			return layer
+	push_warning("[AdventureMap] map_roads.tscn not found — roads disabled.")
+	var fallback := TileMapLayer.new()
+	fallback.name = "RoadLayer"
+	fallback.z_index = 0
+	fallback.scale = Vector2(MAP_SCALE, MAP_SCALE)
+	add_child(fallback)
+	return fallback
 
 
 func _setup_fog() -> void:
@@ -318,6 +344,16 @@ func _generate_map() -> void:
 		_terrain_layer.set_cell(tile, SRC_SQUARE, TILE_OBSTACLE)
 		_blocked_tiles.append(tile)
 		placed += 1
+
+	# Generate and place road network using the same deterministic seed.
+	# Road tiles are placed via the terrain system so the engine
+	# auto-selects the correct atlas tile (straights, corners,
+	# T-junctions, diagonals, etc.) based on neighbour connections.
+	var road_rng := RandomNumberGenerator.new()
+	road_rng.seed = _get_map_seed() ^ 0x5EED
+	var road_positions: Array[Vector2i] = RoadGenerator.generate(
+		road_rng, MAP_COLS, MAP_ROWS, _blocked_tiles, START_TILE)
+	RoadGenerator.place(_road_layer, road_positions)
 
 
 # ── CAMERA SETUP ─────────────────────────────────────────────────────────────────
