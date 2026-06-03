@@ -2,7 +2,7 @@
 
 **Engine:** Godot 4.6.2
 **Genre:** HoMM3-inspired turn-based strategy roguelike
-**Last updated:** 2026-06-02
+**Last updated:** 2026-06-03 (session 2)
 
 ---
 
@@ -34,7 +34,8 @@ No `.tres` files exist yet — all units use runtime-created defaults via `DataM
 - `SquareGrid` (RefCounted) — 8-directional square grid for adventure map, Chebyshev A*
 - `DamageCalculator` (RefCounted) — Static HoMM3 damage formula with luck, morale, ranged penalty
 - `FogOfWar` (Sprite2D + shader) — Pixelated fog overlay using noise texture, BFS gradient edge, Euclidean visibility
-- `RoadGenerator` (RefCounted) — Road network generation using **hybrid terrain system**: cardinal roads via `set_cells_terrain_connect()`, diagonal tiles + corner caps placed manually with `set_cell()`
+- `RoadGenerator` (RefCounted) — **Building-to-building road connections only**; growing-connected-set approach (Prim's-like) using cardinal-only BFS; no random road network
+- `BuildingPlacement` (inline in AdventureMap) — Seeded RNG placement of 7 vault buildings (5×3 tiles); footprint blocks pathfinding except entrance opening (bottom row col 1-3) and middle center (col 2) for road traversal; rendered on dedicated TileMapLayer below fog overlay
 
 ### Cross-Scene Combat Flow
 - `GameState.player_army: Array[Dictionary]` — player's current army, persisted across AdventureMap ↔ CombatScene transitions
@@ -70,13 +71,10 @@ Spells, hero integration, war machines, siege, special abilities, advanced AI �
 - Free camera edge-scrolling, Space to snap camera to player
 - Enemy sprites hidden by fog of war, player position saved/restored across combat
 - Auto-init for editor testing
-- **Road generation system** using hybrid terrain system:
-  - Cardinal roads placed via `set_cells_terrain_connect()` — auto-selects straights, corners, T-junctions, crossroads
-  - Diagonal roads (\ and /) placed manually with `set_cell()` using correct atlas tiles
-  - Corner cap fill tiles at cardinal positions around diagonal tiles to smooth staircase visual
-  - All tile positions deterministic per run seed; persiste across combat via scene preservation
+- **Building placement** — 7 vault buildings placed on the map with 5×3 tile footprint, collision blocking (entrance tiles open), rendered on BuildingLayer TileMapLayer, hidden by fog in unexplored areas
+- **Building-to-building road connections** — no random road network; roads only connect buildings using a growing-connected-set approach (cardinal-only BFS). Side entrance tiles (bottom col 1, 3) blocked in road BFS to force center-column exit. Tiles below building entrances reserved from obstacle placement to guarantee a connection path.
 
-**Missing:** map objects (mines, chests, towns), time system, full HUD, terrain variety, seeded generation, underground layer, fog save/load, hero stats panel
+**Missing:** map objects (mines, chests, towns), time system, full HUD, terrain variety, seeded generation for map features beyond buildings/obstacles, underground layer, fog save/load, hero stats panel
 
 ### Milestone 4+ — Not started
 
@@ -101,7 +99,11 @@ Spells, hero integration, war machines, siege, special abilities, advanced AI �
 - **CombatScene deferred init** — `_ready()` defers test-battle creation via `call_deferred()` so SceneManager's `_on_scene_entered()` delivers real army data first; `_initialized` flag prevents double initialization
 - **AdventureMap _initialized guard** — `_ready()` uses `_initialized` flag to skip re-init when scene is re-added to tree after preservation (Godot 4 fires `_ready()` on reparent)
 - **Player position saved across combat** — `player_tile` stored in `GameState.combat_result.saved_player_tile` before combat, restored in `_process_combat_result()` after combat
-- **Enemy visibility gated by fog** — enemy sprites are hidden unless their tile is in `GameState.explored_tiles`, updated on fog recalculation and enemy sprite sync
+- **Enemy visibility gated by fog** — enemy sprites hidden unless their tile is in `GameState.explored_tiles`, updated on fog recalculation and enemy sprite sync
 - **Deterministic obstacle placement** — `_generate_map()` seeds RNG from `GameState.run_seed` so obstacles remain consistent when preserved scene is restored
 - **Default unit data** — `DataManager._create_default_units()` creates 4 test units (swordsman, archer, goblin, skeleton) when no `.tres` files exist
-- **Hybrid road generation** — Cardinal roads placed via Godot's TileSet terrain system for auto tile selection; pure diagonal tiles placed manually with `set_cell()` (terrain system cannot resolve corner-only peering bits); corner cap fill tiles placed at cardinal offsets around diagonal tiles using Dictionary-based dedup to avoid overwriting existing road tiles
+- **Building placement** — Buildings rendered on a dedicated `BuildingLayer` TileMapLayer with `vault.png` as a 5×3 atlas source (each tile 32×32). Positions determined by seeded RNG (`run_seed ^ 0xBEEF`) for deterministic generation per run. Building footprint tiles added to `_blocked_tiles` (pathfinding blocked) except entrance opening (bottom row tiles 1-3) and middle center (cx=2, ry=1) for road traversal. Building layer sits at z_index 0 below fog overlay so buildings are naturally hidden in unexplored areas.
+- **Road network: building-to-building only** — No random grid roads. `RoadGenerator.generate()` uses a growing-connected-set approach: the first building's entrance tiles seed the set, then each remaining entrance BFSes (cardinal-only, unlimited iteration) to the nearest tile in the existing set (like Prim's MST). Roads only exist between buildings.
+- **road_blocked set** — A separate blocked set for road generation extends `_blocked_tiles` with building side entrance tiles (bottom col 1, 3). This forces the road BFS to always exit a building through the center column, never routing through side entrance tiles. Player pathfinding is unaffected.
+- **Entrance-adjacent tile reservation** — The tile directly below each building entrance `(base.x+2, base.y+3)` is excluded from obstacle placement, guaranteeing at least one open neighbor for the road BFS to connect through.
+- **Middle center road passage** — The middle row center tile (cx=2, ry=1) is unblocked so the road can run vertically through the building center (middle center → bottom center → outward to the network).

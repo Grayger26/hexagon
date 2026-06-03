@@ -1,48 +1,50 @@
-# Session Handoff — 2026-06-02
+# Session Handoff — 2026-06-03 (Session 2)
 
 ## Work Completed
 
-### Road Generator Rewrite (hybrid terrain system)
-- Replaced manual tile classification (300+ lines of connection masks, lookup tables, corner cap logic) with a hybrid approach
-- **Phase 1** — Cardinal road cells passed to `set_cells_terrain_connect()`: Godot's TileSet terrain system auto-selects straights, corners, T-junctions, crossroads, and cardinal↔diagonal transition tiles from `map_roads.png`
-- **Phase 2** — Pure diagonal cells (no cardinal neighbours) placed with `set_cell()`: correct atlas tile selected based on 8-direction connection mask (NW+SE = `\`, NE+SW = `/`, single-bit = end caps)
-- **Phase 3** — Corner cap fill tiles at all 4 cardinal positions (N, W, E, S) around each diagonal tile to smooth the staircase visual, using Dictionary-based dedup to avoid overwriting existing road tiles
+### Road-to-Building Connection Fix
+- Identified and fixed two bugs causing building-to-building roads to fail:
+  - BFS had an `idx < 200` iteration cap — too low for buildings 15+ tiles apart with cardinal-only movement; removed the cap entirely
+  - Tile below building entrance `(base.x+2, base.y+3)` could be blocked by an obstacle, making the entrance a dead-end; reserved from obstacle placement
 
-Corner cap tile mapping per user specification:
-| Diagonal | N | W | E | S |
-|---|---|---|---|---|
-| `\` (NW→SE) | (2,3) lower-left | (1,4) upper-right | (2,3) lower-left | (1,4) upper-right |
-| `/` (SW→NE) | (4,4) lower-right | (4,4) lower-right | (6,4) upper-left | (1,4) upper-right |
+### Road-to-Building Path Integrity
+- Removed unused/wrong `BUILDING_ENTRANCE_LOCAL` constant (pointed to col 3 instead of col 2)
+- Unblocked middle row center tile (ry=1, cx=2) so the road BFS can traverse it
+- Road BFS set (`road_blocked`) blocks side entrance tiles (bottom col 1 & 3), forcing the spur to exit through the center column only — no road tiles on side entrance tiles
+- Road now runs exactly on tile 2 of the bottom row and tile 2 of the middle row
 
-- `generate()` now returns `Array[Vector2i]` (positions) instead of `Dictionary` (position→atlas_coord)
-- `place()` cleared of all manual atlas-coordinate and corner-cap logic
-
-### AdventureMap Integration
-- Updated `_generate_map()` to pass `Array[Vector2i]` to RoadGenerator.place()
+### Road Network Rewrite
+- **Removed random road grid generation** — `RoadGenerator.generate()` no longer calls `generate_network()`
+- **New approach**: building-to-building connections only, using a growing-connected-set (Prim's-like) algorithm
+  - First building's entrance tiles seed the connected set
+  - Each remaining building BFSes (cardinal-only, unlimited) to the nearest tile in the existing network
+  - Result: roads only exist between buildings, no needless roads
+- `dead code left in place`: `generate_network()`, `_add_road_tile()`, `_add_entrance_connections()` are no longer called but remain defined (minor cleanup for a future session)
 
 ## Modified Files
 
 | File | Change |
 |---|---|
-| `scripts/adventure_map/RoadGenerator.gd` | Full rewrite — hybrid terrain/manual placement, corner cap support. ~330 lines |
-| `scripts/adventure_map/AdventureMap.gd` | Updated road generation call (Dictionary → Array[Vector2i]) |
-| `docs/development/Project_State.md` | Updated core systems, milestone status, architecture decisions |
+| `scripts/adventure_map/AdventureMap.gd` | Removed `BUILDING_ENTRANCE_LOCAL` const; unblocked middle center tile; added `_building_bases` tracking; simplified `building_entrances` (middle center only); built `road_blocked` set; reserved entrance-adjacent tiles from obstacles |
+| `scripts/adventure_map/RoadGenerator.gd` | Rewrote `generate()` — building-to-building only, no grid network; removed `idx < 200` BFS cap |
+| `docs/development/Project_State.md` | Updated road generation, building placement, architecture decisions |
+| `docs/development/Session_Handoff.md` | This file |
 
 ## Unfinished Tasks
 
-- **Map objects on adventure map** — mines, chests, neutral creature stacks, terrain types remain unimplemented (Milestone 3)
+- **Some buildings not connected** — the BFS may fail when obstacles fully wall off a building from the network; needs a connectivity fallback
+- **Map objects** — mines, chests, dwellings, terrain types remain unimplemented (Milestone 3)
+- **Building interaction** — buildings are visual only; no click/interaction functionality yet
 - **FactionSelect scene** — still bypassed; "New Run" goes directly to AdventureMap
-- **No persistent FadeRect** — SceneManager has no fade after initial MainMenu→AdventureMap transition (fade_rect is lost when MainMenu is freed)
-- **Cardinal↔diagonal transition tiles** — some cardinal↔diagonal junctions lack matching transition tiles in the atlas (e.g. horizontal→`\` right_side+bottom_right_corner), producing a visual gap at the transition point
-- **Diagonal road corner overlap with cardinal roads** — corner caps are correctly skipped at cardinal road positions, but this means some diagonal staircase edges adjacent to cardinal roads have unfilled gaps
+- **Multiple building types** — only vault.png exists; no town, mine, or dwelling sprites yet
 
 ## Next Recommended Action
 
-**Implement map objects on the adventure map** — mines (resource generation), chests (gold/XP), dwellings (unit recruitment), and terrain type tiles. This is the next Milestone 3 deliverable and the most impactful addition now that road generation with proper diagonal handling, combat flow, scene persistence, and camera controls are solid.
+**Add interactive map objects** — mines (resource generation), chests (gold/XP choice), and dwellings (unit recruitment). Road system is now stable and buildings-only — moving to map content.
 
 ## Known Issues
 
-- SceneManager has no fade between AdventureMap ↔ CombatScene transitions (fade_rect from MainMenu was freed; need a persistent overlay)
+- SceneManager has no fade between AdventureMap ↔ CombatScene transitions (fade_rect from MainMenu was freed)
 - Combat AI uses a hardcoded 0.55s delay timer
 - All adventure map UI positions are hardcoded for 1920×1080
 - Path arrow preview flickers on rapid mouse movement
@@ -50,5 +52,4 @@ Corner cap tile mapping per user specification:
 - Camera smoothing coordinate mismatch between `_tile_to_local` scale and map scale
 - `DataManager.get_spells_by_school()` references `units.values()` instead of `spells.values()` (copy-paste bug, line ~96)
 - `CombatScene._load_test_battle()` creates duplicate UnitData instances even though DataManager already has identical fallback units
-- Friendly-stack-switching code commented out in `CombatScene._on_click()` (lines 456-463)
-- Cardinal↔diagonal road transitions may leave visual gaps where the atlas lacks a matching transition tile
+- Some buildings may not be road-connected if the BFS path is fully blocked by obstacles or other buildings — no connectivity fallback exists yet

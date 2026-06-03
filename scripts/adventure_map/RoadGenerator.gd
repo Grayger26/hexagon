@@ -217,13 +217,138 @@ static func _is_forwardslash(mask: int) -> bool:
 
 # ── MAIN ENTRY POINT ───────────────────────────────────────────────────────────
 
+## Only connect building entrances to each other — no general road network.
+## Uses a growing-connected-set approach: the first entrance seeds the set,
+## then each remaining entrance BFSes to the nearest existing road tile.
 static func generate(
 		rng: RandomNumberGenerator,
 		map_cols: int,
 		map_rows: int,
 		blocked: Array[Vector2i],
-		start_tile: Vector2i) -> Array[Vector2i]:
-	return generate_network(rng, map_cols, map_rows, blocked, start_tile)
+		start_tile: Vector2i,
+		building_entrances: Array[Vector2i] = []) -> Array[Vector2i]:
+	if building_entrances.size() < 2:
+		return []
+
+	var blocked_set: Dictionary = {}
+	for b: Vector2i in blocked:
+		blocked_set[b] = true
+
+	# Seed the connected set with the first building's middle center.
+	var result: Array[Vector2i] = [building_entrances[0]]
+	var result_set: Dictionary = {building_entrances[0]: true}
+	# Also include the bottom center tile for the first building.
+	var bottom_tile := Vector2i(building_entrances[0].x, building_entrances[0].y + 1)
+	if not blocked_set.has(bottom_tile):
+		result.append(bottom_tile)
+		result_set[bottom_tile] = true
+
+	# Connect each remaining entrance to the growing road network.
+	for i in range(1, building_entrances.size()):
+		var spur: Array[Vector2i] = _find_road_spur(
+			building_entrances[i], result_set, blocked_set, map_cols, map_rows)
+		for tile: Vector2i in spur:
+			if not result_set.has(tile):
+				result_set[tile] = true
+				result.append(tile)
+
+	return result
+
+
+## For each building entrance, find the nearest road tile using cardinal-only BFS
+## and add the connecting path as new road tiles. This creates "driveways" from
+## each building to the main road network.
+static func _add_entrance_connections(
+		roads: Array[Vector2i],
+		road_set: Dictionary,
+		entrances: Array[Vector2i],
+		blocked: Array[Vector2i],
+		map_cols: int,
+		map_rows: int) -> Array[Vector2i]:
+	if entrances.is_empty():
+		return roads
+
+	var blocked_set: Dictionary = {}
+	for b: Vector2i in blocked:
+		blocked_set[b] = true
+
+	var result: Array[Vector2i] = roads.duplicate()
+	var result_set: Dictionary = road_set.duplicate()
+
+	for entrance: Vector2i in entrances:
+		var spur: Array[Vector2i] = _find_road_spur(
+			entrance, result_set, blocked_set, map_cols, map_rows)
+		for tile: Vector2i in spur:
+			if not result_set.has(tile):
+				result_set[tile] = true
+				result.append(tile)
+
+	return result
+
+
+## BFS outward from `entrance` using cardinal-only directions to find the
+## closest tile adjacent to an existing road. Returns the path of tiles from
+## entrance (inclusive) to the tile immediately before the existing road tile
+## (exclusive of the road tile itself). Returns empty if no road is reachable.
+##
+## The path is purely cardinal so the terrain system can render it correctly.
+static func _find_road_spur(
+		entrance: Vector2i,
+		road_set: Dictionary,
+		blocked_set: Dictionary,
+		map_cols: int,
+		map_rows: int) -> Array[Vector2i]:
+	if entrance in road_set:
+		return []
+	if entrance in blocked_set:
+		return []
+
+	var cardinals: Array[Vector2i] = [
+		Vector2i(0, -1),  # N
+		Vector2i(1,  0),  # E
+		Vector2i(0,  1),  # S
+		Vector2i(-1,  0), # W
+	]
+
+	var visited: Dictionary = {entrance: true}
+	var came_from: Dictionary = {}
+	came_from[entrance] = null
+	var frontier: Array[Vector2i] = [entrance]
+	var idx: int = 0
+
+	while idx < frontier.size():
+		var tile: Vector2i = frontier[idx]
+		idx += 1
+
+		for dir: Vector2i in cardinals:
+			var next: Vector2i = tile + dir
+
+			if next.x < 0 or next.x >= map_cols or next.y < 0 or next.y >= map_rows:
+				continue
+			if visited.has(next):
+				continue
+			if next in blocked_set:
+				continue
+
+			visited[next] = true
+			came_from[next] = tile
+
+			if next in road_set:
+				# Reconstruct path from entrance to `tile` (which is adjacent to
+				# the existing road at `next`). The entrance tile is included as
+				# the first road-spur tile so the road runs right up to the building.
+				var path: Array[Vector2i] = []
+				var current: Vector2i = tile
+				while current != entrance:
+					path.append(current)
+					current = came_from[current]
+				path.reverse()
+				path.push_front(entrance)
+				return path
+
+			frontier.append(next)
+
+	return []
 
 
 # ── PLACEMENT ───────────────────────────────────────────────────────────────────

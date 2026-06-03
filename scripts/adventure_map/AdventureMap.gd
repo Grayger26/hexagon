@@ -30,6 +30,12 @@ const PATH_ARROWS_PATH: String = "res://assets/tilemaps/path_arrows.png"
 const PLAYER_SPRITE_PATH: String = "res://assets/sprites/swordman.png"
 const ENEMY_SPRITE_PATH: String = "res://assets/sprites/enemy_swordman.png"
 const MAP_ROADS_SCENE_PATH: String = "res://scenes/tilemaps/map_roads.tscn"
+const BUILDINGS_PATH: String = "res://assets/buildings/vault.png"
+
+# Building sprite sheet dimensions (vault.png = 160x96 = 5x3 tiles at 32px).
+const BUILDING_TILES_W: int = 5
+const BUILDING_TILES_H: int = 3
+const BUILDING_COUNT: int = 7
 
 # ── SQUARE TILES ATLAS COORDS ────────────────────────────────────────────────────
 # square_tiles.png is 64x64, 4 tiles in a 2x2 grid, each 32x32.
@@ -44,6 +50,7 @@ const TILE_OTHER_B:   Vector2i = Vector2i(1, 1)   # dark red (unused for now)
 # path_arrows.png is 96x96, 9 arrows in a 3x3 grid, each 32x32.
 
 const SRC_ARROW: int = 0
+const SRC_BUILDING: int = 0
 
 # Direction -> atlas lookup is handled by SquareGrid.DIRECTION_ARROW_ATLAS.
 # We store the atlas coords as constants for the TileMapLayer.
@@ -86,6 +93,7 @@ var _moveable_tiles: Dictionary = {}         # explored + gradient zone — set 
 
 var _terrain_layer: TileMapLayer
 var _road_layer:    TileMapLayer
+var _building_layer: TileMapLayer
 var _path_layer:    TileMapLayer
 var _player_sprite: Sprite2D
 var _fog_sprite:    Sprite2D
@@ -169,6 +177,14 @@ func _build_tilemaps() -> void:
 	# --- Road layer (sits above terrain, below fog and path) ---
 	_road_layer = _make_road_layer()
 
+	# --- Building layer (sits above terrain, below fog) ---
+	_building_layer = TileMapLayer.new()
+	_building_layer.name = "BuildingLayer"
+	_building_layer.z_index = 0
+	_building_layer.scale = Vector2(MAP_SCALE, MAP_SCALE)
+	_building_layer.tile_set = _build_building_tileset()
+	add_child(_building_layer)
+
 	# --- Path arrow layer (sits above terrain) ---
 	_path_layer = TileMapLayer.new()
 	_path_layer.name = "PathLayer"
@@ -225,6 +241,33 @@ func _build_arrow_tileset() -> TileSet:
 			source.create_tile(Vector2i(col, row))
 
 	ts.add_source(source, SRC_ARROW)
+	return ts
+
+
+func _build_building_tileset() -> TileSet:
+	## Create a TileSet for the building sprite sheet (vault.png).
+	## The atlas is 5 tiles wide x 3 tiles high, each tile 32x32.
+	## Returns null if the texture file is missing (buildings are skipped).
+	if not ResourceLoader.exists(BUILDINGS_PATH):
+		push_warning("[AdventureMap] vault.png not found — buildings disabled.")
+		return null
+
+	var ts := TileSet.new()
+	ts.tile_shape       = TileSet.TILE_SHAPE_SQUARE
+	ts.tile_layout      = TileSet.TILE_LAYOUT_STACKED
+	ts.tile_offset_axis = TileSet.TILE_OFFSET_AXIS_HORIZONTAL
+	ts.tile_size        = Vector2i(SquareGrid.TILE_SIZE, SquareGrid.TILE_SIZE)
+
+	var source := TileSetAtlasSource.new()
+	source.texture = load(BUILDINGS_PATH) as Texture2D
+	source.texture_region_size = Vector2i(SquareGrid.TILE_SIZE, SquareGrid.TILE_SIZE)
+
+	# Create all 15 tiles (5 cols x 3 rows) from the atlas
+	for col: int in range(BUILDING_TILES_W):
+		for row: int in range(BUILDING_TILES_H):
+			source.create_tile(Vector2i(col, row))
+
+	ts.add_source(source, SRC_BUILDING)
 	return ts
 
 
@@ -299,6 +342,8 @@ func _setup_fog() -> void:
 
 func _generate_map() -> void:
 	_terrain_layer.clear()
+	if is_instance_valid(_building_layer):
+		_building_layer.clear()
 	_blocked_tiles.clear()
 
 	# Fill with ground tiles
@@ -306,14 +351,101 @@ func _generate_map() -> void:
 		for row: int in range(MAP_ROWS):
 			_terrain_layer.set_cell(Vector2i(col, row), SRC_SQUARE, TILE_GROUND)
 
-	# Build a set of tiles that enemy units occupy — obstacles must not block them.
+	# Build a set of tiles that enemy units occupy
 	var enemy_tiles: Dictionary = {}
 	for key: Variant in GameState.map_enemies:
 		var entry: Dictionary = GameState.map_enemies[key] as Dictionary
 		enemy_tiles[entry["tile"] as Vector2i] = true
 
-	# Place obstacles in the central area, avoiding the player start tile
-	# and any tiles occupied by map enemies.
+	# ── BUILDING PLACEMENT ─────────────────────────────────────────────────
+	# Place buildings using a seeded RNG (deterministic per run).
+	# Building footprint: BUILDING_TILES_W x BUILDING_TILES_H tiles.
+	# The entrance tile (bottom row, 4th column) is NOT blocked so the player
+	# can walk up to it; all other footprint tiles block movement.
+	var all_building_tiles: Dictionary = {}
+	var _building_bases: Array[Vector2i] = []
+	## Track center tile of each building entrance for road connection.
+	var building_entrances: Array[Vector2i] = []
+
+	if _building_layer != null and _building_layer.tile_set != null:
+		var bld_rng := RandomNumberGenerator.new()
+		bld_rng.seed = _get_map_seed() ^ 0xBEEF
+
+		var bld_candidates: Array[Vector2i] = []
+		for col: int in range(3, MAP_COLS - BUILDING_TILES_W - 3):
+			for row: int in range(3, MAP_ROWS - BUILDING_TILES_H - 3):
+				var tile := Vector2i(col, row)
+				if SquareGrid.chebyshev_distance(tile, START_TILE) <= 5:
+					continue
+				bld_candidates.append(tile)
+
+		# Fisher-Yates shuffle for deterministic placement
+		for i in range(bld_candidates.size() - 1, 0, -1):
+			var j := bld_rng.randi_range(0, i)
+			var tmp = bld_candidates[i]
+			bld_candidates[i] = bld_candidates[j]
+			bld_candidates[j] = tmp
+
+		var buildings_placed: int = 0
+		for base_tile: Vector2i in bld_candidates:
+			if buildings_placed >= BUILDING_COUNT:
+				break
+
+			# Check for overlap with existing buildings or enemies
+			var blocked: bool = false
+			for cx: int in range(BUILDING_TILES_W):
+				for ry: int in range(BUILDING_TILES_H):
+					var wt: Vector2i = Vector2i(base_tile.x + cx, base_tile.y + ry)
+					if all_building_tiles.has(wt) or enemy_tiles.has(wt):
+						blocked = true
+						break
+				if blocked:
+					break
+			if blocked:
+				continue
+
+			# Place the building tiles on the building layer
+			for cx: int in range(BUILDING_TILES_W):
+				for ry: int in range(BUILDING_TILES_H):
+					var wt: Vector2i = Vector2i(base_tile.x + cx, base_tile.y + ry)
+					all_building_tiles[wt] = true
+					_building_layer.set_cell(wt, SRC_BUILDING, Vector2i(cx, ry))
+
+			# Mark all tiles except the entrance as blocked for movement
+			for cx: int in range(BUILDING_TILES_W):
+				for ry: int in range(BUILDING_TILES_H):
+					var wt: Vector2i = Vector2i(base_tile.x + cx, base_tile.y + ry)
+					# Entrance: bottom row, tiles 1-3 are open (no collision).
+					# Tiles 0 and 4 on the bottom row remain blocked (building walls).
+					if ry == BUILDING_TILES_H - 1 and cx >= 1 and cx <= 3:
+						continue  # entrance opening — no collision
+					# Middle center tile — open so the road can run under the building.
+					if ry == 1 and cx == 2:
+						continue
+					_blocked_tiles.append(wt)
+
+			# Record the middle center tile for road connection.
+			# The BFS spur exits through bottom center (open entrance)
+			# and goes south to the nearest road. Side entrance tiles
+			# (bottom col 1 and 3) are blocked in the road-BFS set.
+			var entrance_tile := Vector2i(
+				base_tile.x + 2,
+				base_tile.y + 1)
+			building_entrances.append(entrance_tile)
+			_building_bases.append(base_tile)
+
+			buildings_placed += 1
+
+	# ── OBSTACLE PLACEMENT ──────────────────────────────────────────────────
+	# Place obstacles in the central area, avoiding the player start tile,
+	# enemy tiles, and all building footprint tiles.
+	# Also reserve the tile directly below each building's entrance so the
+	# road BFS can always connect through it (otherwise obstacles may block
+	# the only open neighbor of the building's entrance tiles).
+	var reserved_road_tiles: Dictionary = {}
+	for base: Vector2i in _building_bases:
+		reserved_road_tiles[Vector2i(base.x + 2, base.y + BUILDING_TILES_H)] = true
+
 	var rng := RandomNumberGenerator.new()
 	rng.seed = _get_map_seed()
 
@@ -324,6 +456,10 @@ func _generate_map() -> void:
 			if tile == START_TILE:
 				continue
 			if enemy_tiles.has(tile):
+				continue
+			if all_building_tiles.has(tile):
+				continue
+			if reserved_road_tiles.has(tile):
 				continue
 			# Avoid blocking immediate neighbour around the start
 			if SquareGrid.chebyshev_distance(tile, START_TILE) <= 2:
@@ -345,14 +481,25 @@ func _generate_map() -> void:
 		_blocked_tiles.append(tile)
 		placed += 1
 
+	# ── ROAD GENERATION ─────────────────────────────────────────────────────
 	# Generate and place road network using the same deterministic seed.
 	# Road tiles are placed via the terrain system so the engine
 	# auto-selects the correct atlas tile (straights, corners,
 	# T-junctions, diagonals, etc.) based on neighbour connections.
+	# Roads naturally route around blocked tiles (building footprints).
+	_road_layer.clear()
 	var road_rng := RandomNumberGenerator.new()
 	road_rng.seed = _get_map_seed() ^ 0x5EED
+	# Build a blocked set for road generation that also blocks
+	# building side entrance tiles (bottom col 1 and 3) so the BFS
+	# spur always exits through the center column only.
+	var road_blocked: Array[Vector2i] = _blocked_tiles.duplicate()
+	for base: Vector2i in _building_bases:
+		road_blocked.append(Vector2i(base.x + 1, base.y + BUILDING_TILES_H - 1))
+		road_blocked.append(Vector2i(base.x + 3, base.y + BUILDING_TILES_H - 1))
 	var road_positions: Array[Vector2i] = RoadGenerator.generate(
-		road_rng, MAP_COLS, MAP_ROWS, _blocked_tiles, START_TILE)
+		road_rng, MAP_COLS, MAP_ROWS, road_blocked, START_TILE,
+		building_entrances)
 	RoadGenerator.place(_road_layer, road_positions)
 
 
