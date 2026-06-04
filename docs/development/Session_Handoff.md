@@ -1,38 +1,35 @@
-# Session Handoff — 2026-06-03 (Session 2)
+# Session Handoff — 2026-06-04 (Session 3)
 
 ## Work Completed
 
-### Road-to-Building Connection Fix
-- Identified and fixed two bugs causing building-to-building roads to fail:
-  - BFS had an `idx < 200` iteration cap — too low for buildings 15+ tiles apart with cardinal-only movement; removed the cap entirely
-  - Tile below building entrance `(base.x+2, base.y+3)` could be blocked by an obstacle, making the entrance a dead-end; reserved from obstacle placement
+### Attempted Diagonal Roads (Reverted)
+- Tried expanding `_find_road_spur()` BFS from cardinal-only to all 8 directions
+- Produced worse results (terrain system cannot cleanly render mixed cardinal+diagonal transitions at spur junctions); reverted immediately
 
-### Road-to-Building Path Integrity
-- Removed unused/wrong `BUILDING_ENTRANCE_LOCAL` constant (pointed to col 3 instead of col 2)
-- Unblocked middle row center tile (ry=1, cx=2) so the road BFS can traverse it
-- Road BFS set (`road_blocked`) blocks side entrance tiles (bottom col 1 & 3), forcing the spur to exit through the center column only — no road tiles on side entrance tiles
-- Road now runs exactly on tile 2 of the bottom row and tile 2 of the middle row
-
-### Road Network Rewrite
-- **Removed random road grid generation** — `RoadGenerator.generate()` no longer calls `generate_network()`
-- **New approach**: building-to-building connections only, using a growing-connected-set (Prim's-like) algorithm
-  - First building's entrance tiles seed the connected set
-  - Each remaining building BFSes (cardinal-only, unlimited) to the nearest tile in the existing network
-  - Result: roads only exist between buildings, no needless roads
-- `dead code left in place`: `generate_network()`, `_add_road_tile()`, `_add_entrance_connections()` are no longer called but remain defined (minor cleanup for a future session)
+### Per-Tile Movement Cost with Road Discount
+- Road tiles now cost 70 movement points per tile (30% less than the base 100)
+- Added `MOVE_COST_ROAD = 70` constant
+- Added `_tile_move_cost(tile)` helper — checks `_road_layer.get_cell_source_id()` to detect road tiles
+- Added `_path_cost(path)` helper — sums per-tile costs across the full path (handles mixed road/normal paths)
+- Updated all three cost calculation sites to use per-tile logic:
+  - `_update_path()` — hover preview budget now steps through per-tile costs
+  - `_on_input_clicked()` — non-cached path budget uses `_path_cost()`
+  - `_animate_movement()` — actual deduction uses `_path_cost()`
+- Removed `movement_points` as `max_cost` from `SquareGrid.find_path()` call — the old flat 100-per-tile budget would prune valid road-heavy paths. Real budget check runs after pathfinding.
 
 ## Modified Files
 
 | File | Change |
 |---|---|
-| `scripts/adventure_map/AdventureMap.gd` | Removed `BUILDING_ENTRANCE_LOCAL` const; unblocked middle center tile; added `_building_bases` tracking; simplified `building_entrances` (middle center only); built `road_blocked` set; reserved entrance-adjacent tiles from obstacles |
-| `scripts/adventure_map/RoadGenerator.gd` | Rewrote `generate()` — building-to-building only, no grid network; removed `idx < 200` BFS cap |
-| `docs/development/Project_State.md` | Updated road generation, building placement, architecture decisions |
+| `scripts/adventure_map/AdventureMap.gd` | Added `MOVE_COST_ROAD` const, `_tile_move_cost()`, `_path_cost()`; updated 3 cost sites to per-tile; removed stale `movement_points` from `find_path()` call |
+| `scripts/adventure_map/RoadGenerator.gd` | Reverted experimental 8-directional BFS change (back to cardinal-only) |
+| `docs/development/Project_State.md` | Updated to session 3; added movement cost system and architecture decisions |
 | `docs/development/Session_Handoff.md` | This file |
 
 ## Unfinished Tasks
 
-- **Some buildings not connected** — the BFS may fail when obstacles fully wall off a building from the network; needs a connectivity fallback
+- **Building connectivity fallback** — Some buildings may not be road-connected if BFS path is fully blocked by obstacles; needs a connectivity fallback
+- **Diagonal roads** — Roads between buildings are purely cardinal (NSEW); no diagonal road segments. The terrain system + `place()` already support diagonal tiles but building-to-building BFS stays cardinal-only for rendering stability.
 - **Map objects** — mines, chests, dwellings, terrain types remain unimplemented (Milestone 3)
 - **Building interaction** — buildings are visual only; no click/interaction functionality yet
 - **FactionSelect scene** — still bypassed; "New Run" goes directly to AdventureMap
@@ -40,7 +37,7 @@
 
 ## Next Recommended Action
 
-**Add interactive map objects** — mines (resource generation), chests (gold/XP choice), and dwellings (unit recruitment). Road system is now stable and buildings-only — moving to map content.
+**Add interactive map objects** — mines (resource generation), chests (gold/XP choice), and dwellings (unit recruitment). Road and movement systems are stable.
 
 ## Known Issues
 

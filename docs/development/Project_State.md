@@ -2,7 +2,7 @@
 
 **Engine:** Godot 4.6.2
 **Genre:** HoMM3-inspired turn-based strategy roguelike
-**Last updated:** 2026-06-03 (session 2)
+**Last updated:** 2026-06-04 (session 3)
 
 ---
 
@@ -34,7 +34,8 @@ No `.tres` files exist yet — all units use runtime-created defaults via `DataM
 - `SquareGrid` (RefCounted) — 8-directional square grid for adventure map, Chebyshev A*
 - `DamageCalculator` (RefCounted) — Static HoMM3 damage formula with luck, morale, ranged penalty
 - `FogOfWar` (Sprite2D + shader) — Pixelated fog overlay using noise texture, BFS gradient edge, Euclidean visibility
-- `RoadGenerator` (RefCounted) — **Building-to-building road connections only**; growing-connected-set approach (Prim's-like) using cardinal-only BFS; no random road network
+- `RoadGenerator` (RefCounted) — Building-to-building road connections only; growing-connected-set approach (Prim's-like) using cardinal-only BFS; no random road network
+- `MovementCost` (inline in AdventureMap) — Per-tile movement cost calculation: road tiles cost 70 (30% less than normal tiles at 100); `_tile_move_cost()` checks `_road_layer` for road detection; `_path_cost()` sums per-tile costs across mixed paths
 - `BuildingPlacement` (inline in AdventureMap) — Seeded RNG placement of 7 vault buildings (5×3 tiles); footprint blocks pathfinding except entrance opening (bottom row col 1-3) and middle center (col 2) for road traversal; rendered on dedicated TileMapLayer below fog overlay
 
 ### Cross-Scene Combat Flow
@@ -73,6 +74,7 @@ Spells, hero integration, war machines, siege, special abilities, advanced AI �
 - Auto-init for editor testing
 - **Building placement** — 7 vault buildings placed on the map with 5×3 tile footprint, collision blocking (entrance tiles open), rendered on BuildingLayer TileMapLayer, hidden by fog in unexplored areas
 - **Building-to-building road connections** — no random road network; roads only connect buildings using a growing-connected-set approach (cardinal-only BFS). Side entrance tiles (bottom col 1, 3) blocked in road BFS to force center-column exit. Tiles below building entrances reserved from obstacle placement to guarantee a connection path.
+- **Per-tile movement costs** — Road tiles cost 70 movement points per tile (30% less than the base 100). The path preview uses per-tile costs to build the reachable path, and the actual movement deduction uses the same per-tile calculation. `SquareGrid.find_path()` no longer receives `movement_points` as `max_cost` (the old flat-cost bound was too tight for road-heavy paths).
 
 **Missing:** map objects (mines, chests, towns), time system, full HUD, terrain variety, seeded generation for map features beyond buildings/obstacles, underground layer, fog save/load, hero stats panel
 
@@ -107,3 +109,5 @@ Spells, hero integration, war machines, siege, special abilities, advanced AI �
 - **road_blocked set** — A separate blocked set for road generation extends `_blocked_tiles` with building side entrance tiles (bottom col 1, 3). This forces the road BFS to always exit a building through the center column, never routing through side entrance tiles. Player pathfinding is unaffected.
 - **Entrance-adjacent tile reservation** — The tile directly below each building entrance `(base.x+2, base.y+3)` is excluded from obstacle placement, guaranteeing at least one open neighbor for the road BFS to connect through.
 - **Middle center road passage** — The middle row center tile (cx=2, ry=1) is unblocked so the road can run vertically through the building center (middle center → bottom center → outward to the network).
+- **Per-tile movement cost with road discount** — `MOVE_COST_ROAD = 70` (30% less than `MOVE_COST_PER_TILE = 100`). `_tile_move_cost()` checks `_road_layer.get_cell_source_id()` for road detection; road tiles cost 70, normal tiles cost 100. `_path_cost()` sums per-tile costs across the full path, correctly handling mixed road/normal paths. Road cost is checked at deduction time, hover-preview time, and click-to-move budget time — all three use the same per-tile logic.
+- **No max_cost in A*** — `SquareGrid.find_path()` received `movement_points` as `max_cost` (flat 100-per-tile budget), which would prune valid road-heavy paths. Removed; the real budget check (`_path_cost(path) > movement_points`) runs after pathfinding and is correct regardless of road composition.

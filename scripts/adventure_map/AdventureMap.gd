@@ -57,6 +57,7 @@ const SRC_BUILDING: int = 0
 
 # ── MOVEMENT COST ────────────────────────────────────────────────────────────────
 const MOVE_COST_PER_TILE: int = 100
+const MOVE_COST_ROAD:   int = 70   # 30% less than normal tiles
 
 # ── FOG OF WAR ───────────────────────────────────────────────────────────────────
 ## Vision radius around the hero (in tiles, Euclidean distance).
@@ -849,6 +850,23 @@ func _tile_to_local(tile: Vector2i) -> Vector2:
 	return _terrain_layer.map_to_local(tile) * MAP_SCALE
 
 
+func _tile_move_cost(tile: Vector2i) -> int:
+	## Returns movement cost for a single tile.
+	## Road tiles cost 30% less than normal tiles.
+	if _road_layer and _road_layer.get_cell_source_id(tile) != -1:
+		return MOVE_COST_ROAD
+	return MOVE_COST_PER_TILE
+
+
+func _path_cost(path: Array[Vector2i]) -> int:
+	## Returns total movement cost for the entire path,
+	## summing per-tile costs (road tiles are cheaper).
+	var total: int = 0
+	for tile: Vector2i in path:
+		total += _tile_move_cost(tile)
+	return total
+
+
 # ── UI SETUP ─────────────────────────────────────────────────────────────────────
 
 func _setup_ui() -> void:
@@ -954,7 +972,7 @@ func _on_hover(tile: Vector2i) -> void:
 	# Walk the path to find how far movement points allow us to go
 	var cost: int = 0
 	for step: Vector2i in full_path:
-		cost += MOVE_COST_PER_TILE
+		cost += _tile_move_cost(step)
 		if cost > movement_points:
 			break
 		_reachable_path.append(step)
@@ -1013,11 +1031,11 @@ func _on_click(tile: Vector2i) -> void:
 	else:
 		# Clicked a tile not in current hover path — try to reach it
 		var path: Array[Vector2i] = SquareGrid.find_path(
-			player_tile, tile, _pathfinding_blocked, movement_points)
+			player_tile, tile, _pathfinding_blocked)
 		if path.is_empty():
 			return  # unreachable
 		# Verify the path is within budget
-		var cost: int = path.size() * MOVE_COST_PER_TILE
+		var cost: int = _path_cost(path)
 		if cost > movement_points:
 			return  # not enough movement points
 		target_path = path
@@ -1033,7 +1051,7 @@ func _animate_movement(path: Array[Vector2i]) -> void:
 	phase = MapPhase.MOVING
 
 	# Deduct movement points
-	var cost: int = path.size() * MOVE_COST_PER_TILE
+	var cost: int = _path_cost(path)
 	movement_points -= cost
 	_refresh_hud()
 
