@@ -8,20 +8,20 @@ extends Node2D
 # ── CONSTANTS ────────────────────────────────────────────────────────────────────
 
 ## Number of columns and rows for the map.
-const MAP_COLS: int = 50
-const MAP_ROWS: int = 35
+const MAP_COLS: int = 160
+const MAP_ROWS: int = 110
 
 ## Node scale (2x makes 32px tiles render as 64px on screen).
 const MAP_SCALE: float = 2.0
 
 ## Player starting tile (roughly center of the map).
-const START_TILE: Vector2i = Vector2i(25, 18)
+const START_TILE: Vector2i = Vector2i(80, 55)
 
 ## Obstacle count for random generation.
-const OBSTACLE_COUNT: int = 80
+const OBSTACLE_COUNT: int = 800
 
 ## Movement points.
-const MAX_MOVE_POINTS: int = 1500
+const MAX_MOVE_POINTS: int = 4500
 
 # ── TEXTURE PATHS ────────────────────────────────────────────────────────────────
 
