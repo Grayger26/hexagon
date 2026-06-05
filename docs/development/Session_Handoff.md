@@ -1,43 +1,44 @@
-# Session Handoff — 2026-06-04 (Session 3)
+# Session Handoff — 2026-06-05 (Session 5)
 
 ## Work Completed
 
-### Attempted Diagonal Roads (Reverted)
-- Tried expanding `_find_road_spur()` BFS from cardinal-only to all 8 directions
-- Produced worse results (terrain system cannot cleanly render mixed cardinal+diagonal transitions at spur junctions); reverted immediately
+### Lighthouse Building (3×3)
+- **Y-sorted rendering** — Bottom row (ry=2) on `LighthouseBottomLayer` at z=1 (under player at z=2); top rows (ry=0-1) on `LighthouseTopLayer` at z=3 (above player)
+- **Collision** — Only center tile (1,1) blocks movement; top row, side columns, and entrance (1,2) are all open
+- **Road under building** — Center tile removed from `road_blocked` (stays in `_blocked_tiles`) so road BFS traverses through it, matching vault behavior
+- **Road connection** — Center tile (1,1) used as road entrance (not added to `_building_bases` to avoid vault's wrong 5×3 offsets)
+- **Deterministic placement** — Separate seeded RNG (`run_seed ^ 0xF00D`), no overlap with vaults or enemies
 
-### Per-Tile Movement Cost with Road Discount
-- Road tiles now cost 70 movement points per tile (30% less than the base 100)
-- Added `MOVE_COST_ROAD = 70` constant
-- Added `_tile_move_cost(tile)` helper — checks `_road_layer.get_cell_source_id()` to detect road tiles
-- Added `_path_cost(path)` helper — sums per-tile costs across the full path (handles mixed road/normal paths)
-- Updated all three cost calculation sites to use per-tile logic:
-  - `_update_path()` — hover preview budget now steps through per-tile costs
-  - `_on_input_clicked()` — non-cached path budget uses `_path_cost()`
-  - `_animate_movement()` — actual deduction uses `_path_cost()`
-- Removed `movement_points` as `max_cost` from `SquareGrid.find_path()` call — the old flat 100-per-tile budget would prune valid road-heavy paths. Real budget check runs after pathfinding.
+### Lighthouse Fog Reveal (HoMM3 mechanic)
+- Walking onto entrance tile (1,2) triggers `_activate_lighthouse()`
+- Reveals all tiles within 15-tile Euclidean radius of lighthouse center permanently
+- One-time effect per run (`_lighthouse_activated` flag)
+- `_lighthouse_base` promoted from local to member variable for cross-method access
 
-## Modified Files
+### Fog Z-Index Fix
+- Fog sprite z_index raised from 0 to 4 — now renders above all building layers (max z=3), hiding lighthouse in unexplored areas
+
+### Modified Files
 
 | File | Change |
 |---|---|
-| `scripts/adventure_map/AdventureMap.gd` | Added `MOVE_COST_ROAD` const, `_tile_move_cost()`, `_path_cost()`; updated 3 cost sites to per-tile; removed stale `movement_points` from `find_path()` call |
-| `scripts/adventure_map/RoadGenerator.gd` | Reverted experimental 8-directional BFS change (back to cardinal-only) |
-| `docs/development/Project_State.md` | Updated to session 3; added movement cost system and architecture decisions |
+| `assets/buildings/lighthouse.png` | New 96×96 asset (3×3 tiles) |
+| `scripts/adventure_map/AdventureMap.gd` | Added lighthouse constants/layers/TileSet/placement/collision, road_blocked exception, road entrance, `_activate_lighthouse()` method, `_lighthouse_base`/`_lighthouse_activated` member vars, fog z_index to 4, `LIGHTHOUSE_REVEAL_RADIUS` constant |
+| `docs/development/Project_State.md` | Added lighthouse to Core Systems, implemented list, architecture decisions (y-sorting, fog reveal, road-under-building); bumped date |
 | `docs/development/Session_Handoff.md` | This file |
 
 ## Unfinished Tasks
 
-- **Building connectivity fallback** — Some buildings may not be road-connected if BFS path is fully blocked by obstacles; needs a connectivity fallback
-- **Diagonal roads** — Roads between buildings are purely cardinal (NSEW); no diagonal road segments. The terrain system + `place()` already support diagonal tiles but building-to-building BFS stays cardinal-only for rendering stability.
+- **Building connectivity fallback** — Some buildings may lack road connection if BFS path fully blocked
+- **Diagonal roads** — Roads between buildings are cardinal-only; no diagonal segments
 - **Map objects** — mines, chests, dwellings, terrain types remain unimplemented (Milestone 3)
-- **Building interaction** — buildings are visual only; no click/interaction functionality yet
+- **Building interaction** — only lighthouse has activation; vaults are decorative only
 - **FactionSelect scene** — still bypassed; "New Run" goes directly to AdventureMap
-- **Multiple building types** — only vault.png exists; no town, mine, or dwelling sprites yet
+- **Milestone 2 (Full Combat)** — Spells, hero integration, war machines, siege, advanced AI, large units all unimplemented
 
 ## Next Recommended Action
 
-**Add interactive map objects** — mines (resource generation), chests (gold/XP choice), and dwellings (unit recruitment). Road and movement systems are stable.
+**Add interactive map objects** — mines (resource generation), chests (gold/XP choice), and dwellings (unit recruitment). Road, movement, enemy collision, and building systems are stable.
 
 ## Known Issues
 

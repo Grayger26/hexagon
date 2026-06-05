@@ -31,11 +31,16 @@ const PLAYER_SPRITE_PATH: String = "res://assets/sprites/swordman.png"
 const ENEMY_SPRITE_PATH: String = "res://assets/sprites/enemy_swordman.png"
 const MAP_ROADS_SCENE_PATH: String = "res://scenes/tilemaps/map_roads.tscn"
 const BUILDINGS_PATH: String = "res://assets/buildings/vault.png"
+const LIGHTHOUSE_PATH: String = "res://assets/buildings/lighthouse.png"
 
 # Building sprite sheet dimensions (vault.png = 160x96 = 5x3 tiles at 32px).
 const BUILDING_TILES_W: int = 5
 const BUILDING_TILES_H: int = 3
 const BUILDING_COUNT: int = 7
+
+# Lighthouse dimensions (lighthouse.png = 96x96 = 3x3 tiles at 32px).
+const LIGHTHOUSE_TILES_W: int = 3
+const LIGHTHOUSE_TILES_H: int = 3
 
 # ── SQUARE TILES ATLAS COORDS ────────────────────────────────────────────────────
 # square_tiles.png is 64x64, 4 tiles in a 2x2 grid, each 32x32.
@@ -71,6 +76,9 @@ const FOG_EXPLORED:  float = 1.0   # fully clear — same as visible
 ## Larger values = a wider, smoother transition zone around explored-area edges.
 const SMOOTH_RADIUS: int = 3
 
+## Radius (in tiles, Euclidean) revealed when visiting the lighthouse.
+const LIGHTHOUSE_REVEAL_RADIUS: int = 15
+
 
 # ── STATE ────────────────────────────────────────────────────────────────────────
 
@@ -90,11 +98,20 @@ var _reachable_path: Array[Vector2i] = []   # prefix truncated by movement budge
 var _pathfinding_blocked: Array[Vector2i] = []  # obstacles + unreachable fog tiles
 var _moveable_tiles: Dictionary = {}         # explored + gradient zone — set during _update_fog()
 
+## Tiles occupied by enemies — used to block pathfinding passage.
+var _enemy_tiles: Dictionary = {}           # Vector2i -> true
+
 # ── CHILD NODES ──────────────────────────────────────────────────────────────────
 
 var _terrain_layer: TileMapLayer
 var _road_layer:    TileMapLayer
 var _building_layer: TileMapLayer
+var _lighthouse_bottom_layer: TileMapLayer  # bottom row (under player, z=1)
+var _lighthouse_top_layer: TileMapLayer     # top rows (above player, z=3)
+## Top-left corner of the lighthouse on the map (-1,-1 if not placed).
+var _lighthouse_base: Vector2i = Vector2i(-1, -1)
+## Whether the player has already visited the lighthouse this run.
+var _lighthouse_activated: bool = false
 var _path_layer:    TileMapLayer
 var _player_sprite: Sprite2D
 var _fog_sprite:    Sprite2D
@@ -156,6 +173,10 @@ func _on_scene_entered(data: Dictionary) -> void:
 	# Reset phase in case it was left as MOVING after combat transition
 	phase = MapPhase.IDLE
 	_process_combat_result()
+	# Refresh enemy tiles and pathfinding blocking after combat results
+	# (defeated enemies no longer block pathfinding).
+	_refresh_enemy_tiles()
+	_rebuild_pathfinding_blocked()
 	_setup_enemies()
 	_refresh_hud()
 	print("[AdventureMap] _on_scene_entered - map_enemies=%s" % str(GameState.map_enemies.keys()))
@@ -185,6 +206,24 @@ func _build_tilemaps() -> void:
 	_building_layer.scale = Vector2(MAP_SCALE, MAP_SCALE)
 	_building_layer.tile_set = _build_building_tileset()
 	add_child(_building_layer)
+
+	# --- Lighthouse bottom layer (below player, z=1) ---
+	# Bottom row renders under the player sprite; top rows render above.
+	_lighthouse_bottom_layer = TileMapLayer.new()
+	_lighthouse_bottom_layer.name = "LighthouseBottomLayer"
+	_lighthouse_bottom_layer.z_index = 1
+	_lighthouse_bottom_layer.scale = Vector2(MAP_SCALE, MAP_SCALE)
+	var lighthouse_ts := _build_lighthouse_tileset()
+	_lighthouse_bottom_layer.tile_set = lighthouse_ts
+	add_child(_lighthouse_bottom_layer)
+
+	# --- Lighthouse top layer (above player, z=3) ---
+	_lighthouse_top_layer = TileMapLayer.new()
+	_lighthouse_top_layer.name = "LighthouseTopLayer"
+	_lighthouse_top_layer.z_index = 3
+	_lighthouse_top_layer.scale = Vector2(MAP_SCALE, MAP_SCALE)
+	_lighthouse_top_layer.tile_set = lighthouse_ts
+	add_child(_lighthouse_top_layer)
 
 	# --- Path arrow layer (sits above terrain) ---
 	_path_layer = TileMapLayer.new()
@@ -272,6 +311,33 @@ func _build_building_tileset() -> TileSet:
 	return ts
 
 
+func _build_lighthouse_tileset() -> TileSet:
+	## Create a TileSet for the lighthouse sprite sheet (lighthouse.png).
+	## The atlas is 3 tiles wide x 3 tiles high, each tile 32x32.
+	## Returns null if the texture file is missing (lighthouse is skipped).
+	if not ResourceLoader.exists(LIGHTHOUSE_PATH):
+		push_warning("[AdventureMap] lighthouse.png not found — lighthouse disabled.")
+		return null
+
+	var ts := TileSet.new()
+	ts.tile_shape       = TileSet.TILE_SHAPE_SQUARE
+	ts.tile_layout      = TileSet.TILE_LAYOUT_STACKED
+	ts.tile_offset_axis = TileSet.TILE_OFFSET_AXIS_HORIZONTAL
+	ts.tile_size        = Vector2i(SquareGrid.TILE_SIZE, SquareGrid.TILE_SIZE)
+
+	var source := TileSetAtlasSource.new()
+	source.texture = load(LIGHTHOUSE_PATH) as Texture2D
+	source.texture_region_size = Vector2i(SquareGrid.TILE_SIZE, SquareGrid.TILE_SIZE)
+
+	# Create all 9 tiles (3 cols x 3 rows) from the atlas
+	for col: int in range(LIGHTHOUSE_TILES_W):
+		for row: int in range(LIGHTHOUSE_TILES_H):
+			source.create_tile(Vector2i(col, row))
+
+	ts.add_source(source, 0)
+	return ts
+
+
 ## Create the road TileMapLayer from the pre-configured map_roads.tscn scene.
 ## Falls back to a blank TileMapLayer if the scene is missing.
 func _make_road_layer() -> TileMapLayer:
@@ -301,7 +367,7 @@ func _setup_fog() -> void:
 	# --- Fog Sprite ---
 	_fog_sprite = Sprite2D.new()
 	_fog_sprite.name = "FogSprite"
-	_fog_sprite.z_index = 0  # above terrain, below path/player
+	_fog_sprite.z_index = 4  # above all building layers (max z=3), so fog hides everything
 	_fog_sprite.centered = false
 	# Linear filtering makes the 1px-per-tile fog image smoothly interpolate
 	# between adjacent pixels — softens the gradient so it doesn't look
@@ -345,6 +411,10 @@ func _generate_map() -> void:
 	_terrain_layer.clear()
 	if is_instance_valid(_building_layer):
 		_building_layer.clear()
+	if is_instance_valid(_lighthouse_bottom_layer):
+		_lighthouse_bottom_layer.clear()
+	if is_instance_valid(_lighthouse_top_layer):
+		_lighthouse_top_layer.clear()
 	_blocked_tiles.clear()
 
 	# Fill with ground tiles
@@ -353,10 +423,7 @@ func _generate_map() -> void:
 			_terrain_layer.set_cell(Vector2i(col, row), SRC_SQUARE, TILE_GROUND)
 
 	# Build a set of tiles that enemy units occupy
-	var enemy_tiles: Dictionary = {}
-	for key: Variant in GameState.map_enemies:
-		var entry: Dictionary = GameState.map_enemies[key] as Dictionary
-		enemy_tiles[entry["tile"] as Vector2i] = true
+	_refresh_enemy_tiles()
 
 	# ── BUILDING PLACEMENT ─────────────────────────────────────────────────
 	# Place buildings using a seeded RNG (deterministic per run).
@@ -397,7 +464,7 @@ func _generate_map() -> void:
 			for cx: int in range(BUILDING_TILES_W):
 				for ry: int in range(BUILDING_TILES_H):
 					var wt: Vector2i = Vector2i(base_tile.x + cx, base_tile.y + ry)
-					if all_building_tiles.has(wt) or enemy_tiles.has(wt):
+					if all_building_tiles.has(wt) or _enemy_tiles.has(wt):
 						blocked = true
 						break
 				if blocked:
@@ -437,6 +504,73 @@ func _generate_map() -> void:
 
 			buildings_placed += 1
 
+	# ── LIGHTHOUSE PLACEMENT ─────────────────────────────────────────────
+	# Place one lighthouse with y-sorting:
+	#   - Bottom row renders on LighthouseBottomLayer (z=1, under player at z=2)
+	#   - Top two rows render on LighthouseTopLayer (z=3, above player)
+	# The middle tile (1,1) blocks movement; bottom-center (1,2) is the entrance.
+	# Use a separate seeded RNG so lighthouse position is deterministic per run.
+	_lighthouse_base = Vector2i(-1, -1)
+	_lighthouse_activated = false
+	if _lighthouse_bottom_layer != null and _lighthouse_bottom_layer.tile_set != null:
+		var lh_rng := RandomNumberGenerator.new()
+		lh_rng.seed = _get_map_seed() ^ 0xF00D
+
+		var lh_candidates: Array[Vector2i] = []
+		for col: int in range(3, MAP_COLS - LIGHTHOUSE_TILES_W - 3):
+			for row: int in range(3, MAP_ROWS - LIGHTHOUSE_TILES_H - 3):
+				var tile := Vector2i(col, row)
+				if SquareGrid.chebyshev_distance(tile, START_TILE) <= 5:
+					continue
+				# Check no overlap with existing buildings or enemies
+				var overlap: bool = false
+				for cx: int in range(LIGHTHOUSE_TILES_W):
+					for ry: int in range(LIGHTHOUSE_TILES_H):
+						var wt: Vector2i = Vector2i(tile.x + cx, tile.y + ry)
+						if all_building_tiles.has(wt) or _enemy_tiles.has(wt):
+							overlap = true
+							break
+					if overlap:
+						break
+				if overlap:
+					continue
+				lh_candidates.append(tile)
+
+		if not lh_candidates.is_empty():
+			var lh_idx: int = lh_rng.randi_range(0, lh_candidates.size() - 1)
+			_lighthouse_base = lh_candidates[lh_idx]
+
+			# Place bottom row (ry=2) on bottom layer (z_index=1, under player)
+			for cx: int in range(LIGHTHOUSE_TILES_W):
+				var wt: Vector2i = Vector2i(_lighthouse_base.x + cx, _lighthouse_base.y + 2)
+				all_building_tiles[wt] = true
+				_lighthouse_bottom_layer.set_cell(wt, 0, Vector2i(cx, 2))
+
+			# Place top two rows (ry=0,1) on top layer (z_index=3, above player)
+			for cx: int in range(LIGHTHOUSE_TILES_W):
+				for ry: int in range(LIGHTHOUSE_TILES_H - 1):
+					var wt: Vector2i = Vector2i(_lighthouse_base.x + cx, _lighthouse_base.y + ry)
+					all_building_tiles[wt] = true
+					_lighthouse_top_layer.set_cell(wt, 0, Vector2i(cx, ry))
+
+			# Set collision: only the middle tile (1,1) blocks movement.
+			# The entrance, top row, and side columns are all open for pathfinding.
+			for cx: int in range(LIGHTHOUSE_TILES_W):
+				for ry: int in range(LIGHTHOUSE_TILES_H):
+					var wt: Vector2i = Vector2i(_lighthouse_base.x + cx, _lighthouse_base.y + ry)
+					if cx == 1 and ry == 1:
+						_blocked_tiles.append(wt)
+
+			# Record the center tile for road connection (like vault buildings).
+			# The BFS spur exits from the center in any direction since all other
+			# footprint tiles are open. The center tile is removed from road_blocked
+			# below so the road BFS can traverse through it (player pathfinding via
+			# _blocked_tiles still blocks the center).
+			var lh_entrance := Vector2i(
+				_lighthouse_base.x + 1,
+				_lighthouse_base.y + 1)
+			building_entrances.append(lh_entrance)
+
 	# ── OBSTACLE PLACEMENT ──────────────────────────────────────────────────
 	# Place obstacles in the central area, avoiding the player start tile,
 	# enemy tiles, and all building footprint tiles.
@@ -446,6 +580,9 @@ func _generate_map() -> void:
 	var reserved_road_tiles: Dictionary = {}
 	for base: Vector2i in _building_bases:
 		reserved_road_tiles[Vector2i(base.x + 2, base.y + BUILDING_TILES_H)] = true
+	# Lighthouse: reserve tile directly below the entrance so road BFS can exit south.
+	if _lighthouse_base != Vector2i(-1, -1):
+		reserved_road_tiles[Vector2i(_lighthouse_base.x + 1, _lighthouse_base.y + LIGHTHOUSE_TILES_H)] = true
 
 	var rng := RandomNumberGenerator.new()
 	rng.seed = _get_map_seed()
@@ -456,7 +593,7 @@ func _generate_map() -> void:
 			var tile := Vector2i(col, row)
 			if tile == START_TILE:
 				continue
-			if enemy_tiles.has(tile):
+			if _enemy_tiles.has(tile):
 				continue
 			if all_building_tiles.has(tile):
 				continue
@@ -498,6 +635,11 @@ func _generate_map() -> void:
 	for base: Vector2i in _building_bases:
 		road_blocked.append(Vector2i(base.x + 1, base.y + BUILDING_TILES_H - 1))
 		road_blocked.append(Vector2i(base.x + 3, base.y + BUILDING_TILES_H - 1))
+	# Lighthouse: unblock the center tile so the road BFS can traverse through it
+	# (the center remains in _blocked_tiles for player pathfinding — they cannot
+	# walk on it, but the road can pass underneath).
+	if _lighthouse_base != Vector2i(-1, -1):
+		road_blocked.erase(Vector2i(_lighthouse_base.x + 1, _lighthouse_base.y + 1))
 	var road_positions: Array[Vector2i] = RoadGenerator.generate(
 		road_rng, MAP_COLS, MAP_ROWS, road_blocked, START_TILE,
 		building_entrances)
@@ -726,6 +868,39 @@ func _trigger_combat(enemy_key: String) -> void:
 	SceneManager.go_to(SceneManager.Scene.COMBAT, data)
 
 
+# ── LIGHTHOUSE ACTIVATION ──────────────────────────────────────────────────
+
+func _activate_lighthouse() -> void:
+	## Called when the player reaches the lighthouse entrance tile.
+	## Permanently reveals a large area around the lighthouse.
+	_lighthouse_activated = true
+	print("[AdventureMap] Lighthouse activated! Revealing %.1f-tile radius." % LIGHTHOUSE_REVEAL_RADIUS)
+
+	var center: Vector2i = Vector2i(
+		_lighthouse_base.x + 1,
+		_lighthouse_base.y + 1)
+	var radius_sq: int = LIGHTHOUSE_REVEAL_RADIUS * LIGHTHOUSE_REVEAL_RADIUS
+	var newly_revealed: int = 0
+
+	# Iterate over a bounding box and check Euclidean distance
+	var half: int = LIGHTHOUSE_REVEAL_RADIUS + 2  # +2 covers the building footprint
+	for x: int in range(center.x - half, center.x + half + 1):
+		for y: int in range(center.y - half, center.y + half + 1):
+			if not _is_in_bounds(Vector2i(x, y)):
+				continue
+			var dx: int = x - center.x
+			var dy: int = y - center.y
+			if dx * dx + dy * dy <= radius_sq:
+				var tile := Vector2i(x, y)
+				if not tile in GameState.explored_tiles:
+					GameState.explored_tiles.append(tile)
+					newly_revealed += 1
+
+	# Refresh fog to show the newly revealed area
+	_update_fog()
+	print("[AdventureMap] Lighthouse revealed %d new tiles" % newly_revealed)
+
+
 # ── FOG OF WAR ─────────────────────────────────────────────────────────────────
 
 
@@ -843,7 +1018,21 @@ func _rebuild_pathfinding_blocked() -> void:
 			if not _moveable_tiles.has(tile) and not blocked_dict.has(tile):
 				result.append(tile)
 
+	# Add enemy tiles to the blocked set — you cannot walk through enemies.
+	for et: Vector2i in _enemy_tiles:
+		if not blocked_dict.has(et):
+			result.append(et)
+
 	_pathfinding_blocked = result
+
+
+func _refresh_enemy_tiles() -> void:
+	## Rebuild _enemy_tiles from GameState.map_enemies.
+	## Call after combat results are processed or enemies are added/removed.
+	_enemy_tiles.clear()
+	for key: Variant in GameState.map_enemies:
+		var entry: Dictionary = GameState.map_enemies[key] as Dictionary
+		_enemy_tiles[entry["tile"] as Vector2i] = true
 
 
 func _tile_to_local(tile: Vector2i) -> Vector2:
@@ -961,9 +1150,14 @@ func _on_hover(tile: Vector2i) -> void:
 	if not _moveable_tiles.has(tile):
 		return
 
-	# Compute full A* path
+	# Compute full A* path.
+	# Enemy tiles block passage but can be targeted for attack.
+	var path_blocked: Array[Vector2i] = _pathfinding_blocked
+	if _enemy_tiles.has(tile):
+		path_blocked = _pathfinding_blocked.duplicate()
+		path_blocked.erase(tile)
 	var full_path: Array[Vector2i] = SquareGrid.find_path(
-		player_tile, tile, _pathfinding_blocked)
+		player_tile, tile, path_blocked)
 	if full_path.is_empty():
 		return
 
@@ -1029,9 +1223,14 @@ func _on_click(tile: Vector2i) -> void:
 		var idx: int = _reachable_path.find(tile)
 		target_path = _reachable_path.slice(0, idx + 1)
 	else:
-		# Clicked a tile not in current hover path — try to reach it
+		# Clicked a tile not in current hover path — try to reach it.
+		# Enemy tiles block passage but can be targeted for attack.
+		var path_blocked: Array[Vector2i] = _pathfinding_blocked
+		if _enemy_tiles.has(tile):
+			path_blocked = _pathfinding_blocked.duplicate()
+			path_blocked.erase(tile)
 		var path: Array[Vector2i] = SquareGrid.find_path(
-			player_tile, tile, _pathfinding_blocked)
+			player_tile, tile, path_blocked)
 		if path.is_empty():
 			return  # unreachable
 		# Verify the path is within budget
@@ -1077,6 +1276,13 @@ func _animate_movement(path: Array[Vector2i]) -> void:
 	var enemy_key: String = GameState.enemy_key(player_tile)
 	if GameState.map_enemies.has(enemy_key):
 		_trigger_combat(enemy_key)
+
+	# After movement completes, check if the player reached the lighthouse entrance.
+	# If so, reveal a large area around the lighthouse permanently.
+	if not _lighthouse_activated and _lighthouse_base != Vector2i(-1, -1):
+		var lh_entrance := Vector2i(_lighthouse_base.x + 1, _lighthouse_base.y + 2)
+		if player_tile == lh_entrance:
+			_activate_lighthouse()
 
 
 # ── END TURN ─────────────────────────────────────────────────────────────────────
