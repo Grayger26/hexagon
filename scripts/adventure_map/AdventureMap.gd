@@ -36,20 +36,19 @@ const LIGHTHOUSE_PATH: String = "res://assets/buildings/lighthouse.png"
 # Building sprite sheet dimensions (vault.png = 160x96 = 5x3 tiles at 32px).
 const BUILDING_TILES_W: int = 5
 const BUILDING_TILES_H: int = 3
-const BUILDING_COUNT: int = 7
+const BUILDING_COUNT: int = 5
 
 # Lighthouse dimensions (lighthouse.png = 96x96 = 3x3 tiles at 32px).
 const LIGHTHOUSE_TILES_W: int = 3
 const LIGHTHOUSE_TILES_H: int = 3
 
-# ── SQUARE TILES ATLAS COORDS ────────────────────────────────────────────────────
-# square_tiles.png is 64x64, 4 tiles in a 2x2 grid, each 32x32.
+# ── SQUARE TILES ATLAS ───────────────────────────────────────────────────────────
+# square_tiles.png is 96x96, 9 tiles in a 3x3 grid, each 32x32.
+# All 9 tiles are ground variations (no obstacle tile — obstacles use blocked_tiles only).
 
 const SRC_SQUARE: int = 0
-const TILE_GROUND:    Vector2i = Vector2i(0, 0)   # orange
-const TILE_OBSTACLE:  Vector2i = Vector2i(1, 0)   # gray
-const TILE_OTHER_A:   Vector2i = Vector2i(0, 1)   # brown (unused for now)
-const TILE_OTHER_B:   Vector2i = Vector2i(1, 1)   # dark red (unused for now)
+const SQUARE_ATLAS_COLS: int = 3
+const SQUARE_ATLAS_ROWS: int = 3
 
 # ── PATH ARROWS ATLAS COORDS ─────────────────────────────────────────────────────
 # path_arrows.png is 96x96, 9 arrows in a 3x3 grid, each 32x32.
@@ -250,9 +249,9 @@ func _build_terrain_tileset() -> TileSet:
 
 	source.texture_region_size = Vector2i(SquareGrid.TILE_SIZE, SquareGrid.TILE_SIZE)
 
-	# All 4 tiles in the 2x2 atlas
-	for col: int in range(2):
-		for row: int in range(2):
+	# All 9 tiles in the 3x3 atlas
+	for col: int in range(SQUARE_ATLAS_COLS):
+		for row: int in range(SQUARE_ATLAS_ROWS):
 			source.create_tile(Vector2i(col, row))
 
 	ts.add_source(source, SRC_SQUARE)
@@ -417,10 +416,15 @@ func _generate_map() -> void:
 		_lighthouse_top_layer.clear()
 	_blocked_tiles.clear()
 
-	# Fill with ground tiles
+	# Fill with varied ground tiles from the 3x3 atlas
+	var ground_rng := RandomNumberGenerator.new()
+	ground_rng.seed = _get_map_seed() ^ 0xDEAD
 	for col: int in range(MAP_COLS):
 		for row: int in range(MAP_ROWS):
-			_terrain_layer.set_cell(Vector2i(col, row), SRC_SQUARE, TILE_GROUND)
+			var atlas_tile := Vector2i(
+				ground_rng.randi_range(0, SQUARE_ATLAS_COLS - 1),
+				ground_rng.randi_range(0, SQUARE_ATLAS_ROWS - 1))
+			_terrain_layer.set_cell(Vector2i(col, row), SRC_SQUARE, atlas_tile)
 
 	# Build a set of tiles that enemy units occupy
 	_refresh_enemy_tiles()
@@ -615,7 +619,7 @@ func _generate_map() -> void:
 	for tile: Vector2i in candidates:
 		if placed >= OBSTACLE_COUNT:
 			break
-		_terrain_layer.set_cell(tile, SRC_SQUARE, TILE_OBSTACLE)
+		# Obstacles block pathfinding but keep the ground tile already placed
 		_blocked_tiles.append(tile)
 		placed += 1
 
@@ -1316,13 +1320,22 @@ func _print_army(label: String, army: Array) -> void:
 # ── FALLBACK TEXTURES (for development without image files) ──────────────────────
 
 func _make_fallback_square_texture() -> ImageTexture:
-	var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
-	var tiles: Array = [
-		[Vector2i(0,0), Color(0.70, 0.49, 0.13, 1.00)],  # orange ground
-		[Vector2i(1,0), Color(0.43, 0.43, 0.43, 1.00)],  # gray obstacle
-		[Vector2i(0,1), Color(0.30, 0.18, 0.07, 1.00)],  # brown spare
-		[Vector2i(1,1), Color(0.34, 0.03, 0.03, 1.00)],  # dark red spare
+	var img := Image.create(96, 96, false, Image.FORMAT_RGBA8)
+	var tiles: Array = []
+	var ground_colors: Array[Color] = [
+		Color(0.55, 0.42, 0.22, 1.00),  # (0,0) brown
+		Color(0.40, 0.55, 0.25, 1.00),  # (1,0) green
+		Color(0.65, 0.55, 0.30, 1.00),  # (2,0) beige
+		Color(0.50, 0.45, 0.20, 1.00),  # (0,1) tan
+		Color(0.35, 0.50, 0.20, 1.00),  # (1,1) darker green
+		Color(0.60, 0.48, 0.28, 1.00),  # (2,1) light brown
+		Color(0.45, 0.38, 0.18, 1.00),  # (0,2) dark tan
+		Color(0.30, 0.45, 0.15, 1.00),  # (1,2) forest green
+		Color(0.70, 0.58, 0.35, 1.00),  # (2,2) sandy
 	]
+	for col: int in range(SQUARE_ATLAS_COLS):
+		for row: int in range(SQUARE_ATLAS_ROWS):
+			tiles.append([Vector2i(col, row), ground_colors[col + row * SQUARE_ATLAS_COLS]])
 	_draw_fallback_tiles(img, tiles)
 	return ImageTexture.create_from_image(img)
 
