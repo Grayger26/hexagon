@@ -129,10 +129,7 @@ func init_default_run_data() -> void:
 		{"unit_id": "swordsman", "count": 8},
 	]
 
-	map_enemies = {
-		_enemy_key_from_ints(30, 18): {"unit_id": "goblin", "count": 30, "tile": Vector2i(30, 18)},
-		_enemy_key_from_ints(33, 22): {"unit_id": "goblin", "count": 45, "tile": Vector2i(33, 22)},
-	}
+	map_enemies = {}
 
 
 ## Build a map-enemy key from tile coordinates.

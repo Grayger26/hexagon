@@ -129,6 +129,7 @@ var _initialized: bool = false
 var _move_label:    Label
 var _end_turn_btn:  Button
 var _tile_info:     Label
+var _army_label:    Label
 
 
 # ── ENTRY ────────────────────────────────────────────────────────────────────────
@@ -427,13 +428,7 @@ func _generate_map() -> void:
 			_terrain_layer.set_cell(Vector2i(col, row), SRC_SQUARE, atlas_tile)
 
 	# Build a set of tiles that enemy units occupy
-	_refresh_enemy_tiles()
-
-	# ── BUILDING PLACEMENT ─────────────────────────────────────────────────
-	# Place buildings using a seeded RNG (deterministic per run).
-	# Building footprint: BUILDING_TILES_W x BUILDING_TILES_H tiles.
-	# The entrance tile (bottom row, 4th column) is NOT blocked so the player
-	# can walk up to it; all other footprint tiles block movement.
+	# (enemies are placed after buildings — skip for now)
 	var all_building_tiles: Dictionary = {}
 	var _building_bases: Array[Vector2i] = []
 	## Track center tile of each building entrance for road connection.
@@ -463,12 +458,12 @@ func _generate_map() -> void:
 			if buildings_placed >= BUILDING_COUNT:
 				break
 
-			# Check for overlap with existing buildings or enemies
+			# Check for overlap with existing buildings
 			var blocked: bool = false
 			for cx: int in range(BUILDING_TILES_W):
 				for ry: int in range(BUILDING_TILES_H):
 					var wt: Vector2i = Vector2i(base_tile.x + cx, base_tile.y + ry)
-					if all_building_tiles.has(wt) or _enemy_tiles.has(wt):
+					if all_building_tiles.has(wt):
 						blocked = true
 						break
 				if blocked:
@@ -526,12 +521,12 @@ func _generate_map() -> void:
 				var tile := Vector2i(col, row)
 				if SquareGrid.chebyshev_distance(tile, START_TILE) <= 5:
 					continue
-				# Check no overlap with existing buildings or enemies
+				# Check no overlap with existing buildings
 				var overlap: bool = false
 				for cx: int in range(LIGHTHOUSE_TILES_W):
 					for ry: int in range(LIGHTHOUSE_TILES_H):
 						var wt: Vector2i = Vector2i(tile.x + cx, tile.y + ry)
-						if all_building_tiles.has(wt) or _enemy_tiles.has(wt):
+						if all_building_tiles.has(wt):
 							overlap = true
 							break
 					if overlap:
@@ -574,6 +569,11 @@ func _generate_map() -> void:
 				_lighthouse_base.x + 1,
 				_lighthouse_base.y + 1)
 			building_entrances.append(lh_entrance)
+
+	# ── ENEMY PLACEMENT ─────────────────────────────────────────────────────
+	# Place enemies procedurally across the map, avoiding buildings.
+	_place_enemies(all_building_tiles)
+	_refresh_enemy_tiles()
 
 	# ── OBSTACLE PLACEMENT ──────────────────────────────────────────────────
 	# Place obstacles in the central area, avoiding the player start tile,
@@ -648,7 +648,52 @@ func _generate_map() -> void:
 		road_rng, MAP_COLS, MAP_ROWS, road_blocked, START_TILE,
 		building_entrances)
 	RoadGenerator.place(_road_layer, road_positions)
+func _place_enemies(building_tiles: Dictionary) -> void:
+	## Place enemy stacks procedurally across the map.
+	## Avoids building footprints and the player start area.
+	## Uses a seeded RNG for deterministic placement per run.
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _get_map_seed() ^ 0xCAFE
 
+	# Gather candidate tiles
+	var candidates: Array[Vector2i] = []
+	for col: int in range(4, MAP_COLS - 4):
+		for row: int in range(4, MAP_ROWS - 4):
+			var tile := Vector2i(col, row)
+			if SquareGrid.chebyshev_distance(tile, START_TILE) <= 4:
+				continue
+			if building_tiles.has(tile):
+				continue
+			candidates.append(tile)
+
+	# Fisher-Yates shuffle
+	for i in range(candidates.size() - 1, 0, -1):
+		var j := rng.randi_range(0, i)
+		var tmp = candidates[i]
+		candidates[i] = candidates[j]
+		candidates[j] = tmp
+
+	# Enemy types available from DataManager defaults
+	var enemy_types: Array[String] = ["goblin", "skeleton", "archer"]
+	# Scale enemy count with map area (~1 per 700 tiles)
+	var target_count: int = clampi(MAP_COLS * MAP_ROWS / 700, 5, 80)
+	var placed: int = 0
+
+	for tile: Vector2i in candidates:
+		if placed >= target_count:
+			break
+
+		var unit_id: String = enemy_types[rng.randi_range(0, enemy_types.size() - 1)]
+		var count: int = rng.randi_range(15, 75)
+		var key: String = GameState.enemy_key(tile)
+		GameState.map_enemies[key] = {
+			"unit_id": unit_id,
+			"count": count,
+			"tile": tile,
+		}
+		placed += 1
+
+	print("[AdventureMap] Placed %d enemies across the map" % placed)
 
 # ── CAMERA SETUP ─────────────────────────────────────────────────────────────────
 
@@ -1079,6 +1124,17 @@ func _setup_ui() -> void:
 	_move_label.add_theme_constant_override("shadow_offset_y", 1)
 	ui.add_child(_move_label)
 
+	# Army composition label (below movement points)
+	_army_label = Label.new()
+	_army_label.name = "ArmyLabel"
+	_army_label.position = Vector2(12, 40)
+	_army_label.add_theme_font_size_override("font_size", 15)
+	_army_label.add_theme_color_override("font_color", Color(0.9, 0.9, 0.8))
+	_army_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+	_army_label.add_theme_constant_override("shadow_offset_x", 1)
+	_army_label.add_theme_constant_override("shadow_offset_y", 1)
+	ui.add_child(_army_label)
+
 	# Tile info (top-right)
 	_tile_info = Label.new()
 	_tile_info.name = "TileInfo"
@@ -1101,6 +1157,9 @@ func _refresh_hud() -> void:
 	_move_label.text = "Movement: %d / %d" % [movement_points, MAX_MOVE_POINTS]
 	if _end_turn_btn:
 		_end_turn_btn.disabled = movement_points >= MAX_MOVE_POINTS
+
+	# Update army display
+	_army_label.text = _format_army_string()
 
 
 # ── INPUT ────────────────────────────────────────────────────────────────────────
@@ -1315,6 +1374,38 @@ func _print_army(label: String, army: Array) -> void:
 		var e: Dictionary = entry as Dictionary
 		parts.append("%s:%d" % [e.get("unit_id", "?"), e.get("count", 0)])
 	print("[AdventureMap] %s — %s" % [label, ", ".join(parts)])
+
+
+func _format_army_string() -> String:
+	## Build a multi-line string showing the player's army composition.
+	## Merges duplicate unit stacks (same unit_id) and shows total count.
+	var merged: Dictionary = {}
+	var total: int = 0
+	for entry: Variant in GameState.player_army:
+		var e: Dictionary = entry as Dictionary
+		var uid: String = e.get("unit_id", "?") as String
+		var count: int = e.get("count", 0) as int
+		merged[uid] = merged.get(uid, 0) + count
+		total += count
+
+	if merged.is_empty():
+		return "Army: empty"
+
+	var lines: Array[String] = ["── Army ──"]
+	var uids: Array = merged.keys()
+	uids.sort()
+	for uid: Variant in uids:
+		var id_str: String = uid as String
+		var count: int = merged[uid] as int
+		var display_name: String = id_str.capitalize()
+		# Try to get the proper display name from DataManager
+		var unit_data = DataManager.get_unit(id_str)
+		if unit_data != null:
+			var ud: Resource = unit_data
+			display_name = ud.unit_name
+		lines.append("  %s  x%d" % [display_name, count])
+	lines.append("Total: %d" % total)
+	return "\n".join(lines)
 
 
 # ── FALLBACK TEXTURES (for development without image files) ──────────────────────
