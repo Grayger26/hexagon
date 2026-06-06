@@ -486,9 +486,6 @@ func _generate_map() -> void:
 					# Tiles 0 and 4 on the bottom row remain blocked (building walls).
 					if ry == BUILDING_TILES_H - 1 and cx >= 1 and cx <= 3:
 						continue  # entrance opening — no collision
-					# Middle center tile — open so the road can run under the building.
-					if ry == 1 and cx == 2:
-						continue
 					_blocked_tiles.append(wt)
 
 			# Record the middle center tile for road connection.
@@ -639,6 +636,11 @@ func _generate_map() -> void:
 	for base: Vector2i in _building_bases:
 		road_blocked.append(Vector2i(base.x + 1, base.y + BUILDING_TILES_H - 1))
 		road_blocked.append(Vector2i(base.x + 3, base.y + BUILDING_TILES_H - 1))
+	# Vault: unblock the middle center tile so the road BFS can traverse through it
+	# (the center remains in _blocked_tiles for player pathfinding -- they cannot
+	# walk inside the building, but the road can pass underneath).
+	for base: Vector2i in _building_bases:
+		road_blocked.erase(Vector2i(base.x + 2, base.y + 1))
 	# Lighthouse: unblock the center tile so the road BFS can traverse through it
 	# (the center remains in _blocked_tiles for player pathfinding — they cannot
 	# walk on it, but the road can pass underneath).
