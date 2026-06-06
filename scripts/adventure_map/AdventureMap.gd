@@ -20,6 +20,10 @@ const START_TILE: Vector2i = Vector2i(80, 55)
 ## Obstacle count for random generation.
 const OBSTACLE_COUNT: int = 800
 
+## Map world bounds in pixels (tiles × tile_size × scale).
+const MAP_WORLD_W: int = MAP_COLS * SquareGrid.TILE_SIZE * int(MAP_SCALE)
+const MAP_WORLD_H: int = MAP_ROWS * SquareGrid.TILE_SIZE * int(MAP_SCALE)
+
 ## Movement points.
 const MAX_MOVE_POINTS: int = 4500
 
@@ -705,41 +709,98 @@ const EDGE_SCROLL_MARGIN: int = 20
 ## Camera scroll speed when edge-scrolling (px/sec).
 const SCROLL_SPEED: float = 1000.0
 
+## Zoom range — 0.5x = 2 tiles per screen pixel, 3.0x = 3 pixels per tile.
+const ZOOM_MIN:     float = 0.5
+const ZOOM_MAX:     float = 3.0
+## Multiplicative zoom step per mouse wheel tick (15%).
+const ZOOM_FACTOR:  float = 1.15
+
 func _setup_camera() -> void:
 	_camera = Camera2D.new()
 	_camera.name = "Camera2D"
 	_camera.anchor_mode = Camera2D.ANCHOR_MODE_DRAG_CENTER
 	# Smoothing is disabled — the movement tween handles camera smoothly.
 	_camera.position_smoothing_enabled = false
+	_camera.zoom = Vector2.ONE   # default 1x
 	add_child(_camera)
 	_camera.make_current()
 
 
 func _process(delta: float) -> void:
 	# Edge-scrolling — only when not moving
-	if phase != MapPhase.IDLE:
-		return
+	if phase == MapPhase.IDLE:
+		var viewport := get_viewport()
+		if viewport == null:
+			return
+		var mouse_pos: Vector2 = viewport.get_mouse_position()
+		var screen_size: Vector2 = viewport.get_visible_rect().size
 
-	var viewport := get_viewport()
-	if viewport == null:
-		return
-	var mouse_pos: Vector2 = viewport.get_mouse_position()
+		var scroll: Vector2 = Vector2.ZERO
+
+		if mouse_pos.x < EDGE_SCROLL_MARGIN:
+			scroll.x -= 1.0
+		elif mouse_pos.x > screen_size.x - EDGE_SCROLL_MARGIN:
+			scroll.x += 1.0
+
+		if mouse_pos.y < EDGE_SCROLL_MARGIN:
+			scroll.y -= 1.0
+		elif mouse_pos.y > screen_size.y - EDGE_SCROLL_MARGIN:
+			scroll.y += 1.0
+
+		if scroll != Vector2.ZERO:
+			# Compute the movement delta in world coordinates.
+			var move: Vector2 = scroll.normalized() * SCROLL_SPEED * delta
+			var new_pos: Vector2 = _camera.position + move
+
+			# Clamp the candidate position so the camera never exceeds bounds,
+			# which avoids the jittery "scroll vs clamp" fight on each frame.
+			var cam_bounds := _compute_camera_bounds(viewport, _camera.zoom)
+			new_pos.x = clampf(new_pos.x, cam_bounds.x, cam_bounds.y)
+			new_pos.y = clampf(new_pos.y, cam_bounds.z, cam_bounds.w)
+			_camera.position = new_pos
+
+	# Always clamp camera so the map edges are never visible inside the viewport.
+	# This is a safety net for any camera movement that isn't caught above
+	# (zoom pan, Space snap, player movement near edges).
+	_clamp_camera()
+
+
+func _compute_camera_bounds(viewport: Viewport, zoom: Vector2) -> Vector4:
+	## Return (min_x, max_x, min_y, max_y) for the camera position.
+	## When the viewport is larger than the map in a dimension, center the
+	## camera on the map and return bounds that keep it there.
 	var screen_size: Vector2 = viewport.get_visible_rect().size
 
-	var scroll: Vector2 = Vector2.ZERO
+	var half_w: float = screen_size.x * 0.5 / zoom.x
+	var half_h: float = screen_size.y * 0.5 / zoom.y
 
-	if mouse_pos.x < EDGE_SCROLL_MARGIN:
-		scroll.x -= 1.0
-	elif mouse_pos.x > screen_size.x - EDGE_SCROLL_MARGIN:
-		scroll.x += 1.0
+	var min_x: float = half_w
+	var max_x: float = float(MAP_WORLD_W) - half_w
+	var min_y: float = half_h
+	var max_y: float = float(MAP_WORLD_H) - half_h
 
-	if mouse_pos.y < EDGE_SCROLL_MARGIN:
-		scroll.y -= 1.0
-	elif mouse_pos.y > screen_size.y - EDGE_SCROLL_MARGIN:
-		scroll.y += 1.0
+	# Viewport wider/taller than map — clamp to the center of the map instead.
+	if min_x >= max_x:
+		var mid: float = float(MAP_WORLD_W) * 0.5
+		min_x = mid; max_x = mid
+	if min_y >= max_y:
+		var mid: float = float(MAP_WORLD_H) * 0.5
+		min_y = mid; max_y = mid
 
-	if scroll != Vector2.ZERO:
-		_camera.position += scroll.normalized() * SCROLL_SPEED * delta
+	return Vector4(min_x, max_x, min_y, max_y)
+
+
+func _clamp_camera() -> void:
+	## Constrain the camera position so the map edges are never visible inside
+	## the viewport. Accounts for current zoom level.
+	var viewport := get_viewport()
+	if viewport == null or not is_instance_valid(_camera):
+		return
+	var cam_bounds := _compute_camera_bounds(viewport, _camera.zoom)
+	_camera.position = Vector2(
+		clampf(_camera.position.x, cam_bounds.x, cam_bounds.y),
+		clampf(_camera.position.y, cam_bounds.z, cam_bounds.w),
+	)
 
 func _setup_player() -> void:
 	_player_sprite = Sprite2D.new()
@@ -762,12 +823,13 @@ func _sync_player_position() -> void:
 	var pos: Vector2 = _tile_to_local(player_tile)
 	if _player_sprite:
 		_player_sprite.position = pos
-	_camera.position = pos
+	_camera.position = _camera_position_for_tile(player_tile)
+	# No need for _clamp_camera() — _camera_position_for_tile already accounts for bounds
 
 
 ## Snap camera focus to the player's current tile.
 func _center_camera_on_player() -> void:
-	_camera.position = _tile_to_local(player_tile)
+	_camera.position = _camera_position_for_tile(player_tile)
 
 
 # ── COMBAT RESULT HANDLING ─────────────────────────────────────────────────────
@@ -1090,6 +1152,19 @@ func _tile_to_local(tile: Vector2i) -> Vector2:
 	return _terrain_layer.map_to_local(tile) * MAP_SCALE
 
 
+func _camera_position_for_tile(tile: Vector2i) -> Vector2:
+	## Return the camera position that centres on `tile`, clamped to map bounds.
+	## When `tile` is near the map edge the camera stops at the boundary instead,
+	## so no area outside the map is visible.
+	var pos: Vector2 = _tile_to_local(tile)
+	var viewport := get_viewport()
+	if viewport != null and is_instance_valid(_camera):
+		var cam_bounds := _compute_camera_bounds(viewport, _camera.zoom)
+		pos.x = clampf(pos.x, cam_bounds.x, cam_bounds.y)
+		pos.y = clampf(pos.y, cam_bounds.z, cam_bounds.w)
+	return pos
+
+
 func _tile_move_cost(tile: Vector2i) -> int:
 	## Returns movement cost for a single tile.
 	## Road tiles cost 30% less than normal tiles.
@@ -1177,13 +1252,34 @@ func _unhandled_input(event: InputEvent) -> void:
 			_center_camera_on_player()
 			return
 
+	# Trackpad pinch-to-zoom gesture (macOS / Wayland / Windows Precision Touchpad)
+	if event is InputEventMagnifyGesture:
+		var mg := event as InputEventMagnifyGesture
+		var old_zoom: Vector2 = _camera.zoom
+		var new_zoom_val: float = clampf(old_zoom.x * mg.factor, ZOOM_MIN, ZOOM_MAX)
+		_camera.zoom = Vector2(new_zoom_val, new_zoom_val)
+		_zoom_pan_toward_mouse(old_zoom)
+		return
+
 	var world_pos: Vector2 = get_global_mouse_position()
 
 	if event is InputEventMouseMotion:
 		_on_hover(_world_to_tile(world_pos))
 	elif event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+		if not mb.pressed:
+			return
+
+		# Mouse wheel zoom (also covers touchpad two-finger vertical scroll)
+		if mb.button_index == MOUSE_BUTTON_WHEEL_UP or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			var old_zoom: Vector2 = _camera.zoom
+			var new_zoom_val: float = old_zoom.x * (ZOOM_FACTOR if mb.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / ZOOM_FACTOR)
+			new_zoom_val = clampf(new_zoom_val, ZOOM_MIN, ZOOM_MAX)
+			_camera.zoom = Vector2(new_zoom_val, new_zoom_val)
+			_zoom_pan_toward_mouse(old_zoom)
+			return
+
+		if mb.button_index == MOUSE_BUTTON_LEFT:
 			_on_click(_world_to_tile(world_pos))
 
 
@@ -1319,16 +1415,20 @@ func _animate_movement(path: Array[Vector2i]) -> void:
 	movement_points -= cost
 	_refresh_hud()
 
-	# Animate step by step, revealing fog after each tile
+	# Animate step by step, revealing fog after each tile.
+	# The player sprite always moves to the exact tile center,
+	# but the camera stops at the map boundary so it never shows
+	# area outside the map and doesn't fight the camera clamp.
 	for step: Vector2i in path:
 		player_tile = step
-		var target_pos: Vector2 = _tile_to_local(step)
+		var sprite_target: Vector2 = _tile_to_local(step)
+		var camera_target: Vector2 = _camera_position_for_tile(step)
 		var tween := create_tween()
 		tween.set_parallel(true)
 		tween.set_trans(Tween.TRANS_LINEAR)
 		tween.set_ease(Tween.EASE_IN_OUT)
-		tween.tween_property(_player_sprite, "position", target_pos, 0.1)
-		tween.tween_property(_camera, "position", target_pos, 0.1)
+		tween.tween_property(_player_sprite, "position", sprite_target, 0.1)
+		tween.tween_property(_camera, "position", camera_target, 0.1)
 		await tween.finished
 
 		_update_fog()
@@ -1408,6 +1508,20 @@ func _format_army_string() -> String:
 		lines.append("  %s  x%d" % [display_name, count])
 	lines.append("Total: %d" % total)
 	return "\n".join(lines)
+
+
+func _zoom_pan_toward_mouse(old_zoom: Vector2) -> void:
+	## After a zoom change, pan the camera so the tile under the mouse
+	## cursor stays at the same screen position.
+	var viewport := get_viewport()
+	if viewport == null:
+		return
+	var mouse_pos: Vector2 = viewport.get_mouse_position()
+	var screen_size: Vector2 = viewport.get_visible_rect().size
+	var screen_center: Vector2 = screen_size * 0.5
+	var world_before: Vector2 = _camera.position + (mouse_pos - screen_center) / old_zoom
+	_camera.position = world_before - (mouse_pos - screen_center) / _camera.zoom
+	_clamp_camera()
 
 
 # ── FALLBACK TEXTURES (for development without image files) ──────────────────────

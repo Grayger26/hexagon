@@ -2,7 +2,7 @@
 
 **Engine:** Godot 4.6.2
 **Genre:** HoMM3-inspired turn-based strategy roguelike
-**Last updated:** 2026-06-06 (session 8)
+**Last updated:** 2026-06-06 (session 9)
 
 ---
 
@@ -40,6 +40,8 @@ No `.tres` files exist yet — all units use runtime-created defaults via `DataM
 - `BuildingPlacement` (inline in AdventureMap) — Seeded RNG placement of 5 vault buildings (5x3 tiles) and 1 lighthouse (3x3); building footprint blocks pathfinding except entrance; **middle center tile now blocked for player, unblocked for roads** (same pattern as lighthouse)
 - `EnemyPlacement` (inline in AdventureMap) — Procedural enemy placement after buildings, before obstacles; seeded RNG, ~25 enemies per run from 3 unit types; avoids buildings and start area
 - `HUD` (inline in AdventureMap) — Movement points label, army composition label (merged stacks with unit names), tile info, End Turn button
+- `CameraZoom` (inline in AdventureMap) — Mouse wheel zoom (15% step, range 0.5x–3.0x) + trackpad pinch-to-zoom via `InputEventMagnifyGesture`; zoom centres on mouse cursor by panning the camera proportionally
+- `CameraClamp` (inline in AdventureMap) — Camera constrained to map world bounds (5120×3520 px); pre-clamps scroll targets and movement tween targets so the camera never pushes past the boundary, preventing jitter and background flashes
 
 ### Cross-Scene Combat Flow
 - `GameState.player_army: Array[Dictionary]` — player's current army, persisted across AdventureMap ↔ CombatScene transitions
@@ -95,3 +97,5 @@ Spells, hero integration, war machines, siege, special abilities, advanced AI �
 - **Army HUD via `_format_army_string()`** — Merges duplicate unit stacks, resolves display names from `DataManager.get_unit()`, shows total count. `Resource.get()` takes one argument (unlike Dictionary's two-argument version).
 - **Enemy placement order** — Buildings → enemies → obstacles → roads. This ensures enemies don't overlap buildings, and obstacles don't block enemy tiles.
 - **Vault building collision** — Only bottom-row tiles 1–3 (0-indexed) are open for player entry. Middle center tile is blocked for player pathfinding but unblocked for road BFS (same pattern as lighthouse). This prevents players from walking into the building interior while allowing roads to pass underneath.
+- **Camera zoom clamped to [0.5, 3.0]** — Multiplicative 15% steps; supports both mouse wheel and trackpad pinch (`InputEventMagnifyGesture`). Zoom centres on the mouse cursor by computing the world position under the cursor before and after the zoom change, then panning the camera to keep that world point fixed on screen.
+- **Camera clamped to map bounds** — `_compute_camera_bounds()` returns (min_x, max_x, min_y, max_y) accounting for viewport size and zoom. `Camera2D` limits are not used because they don't dynamically account for zoom. Pre-clamping during edge-scrolling (`_process`) and player-movement tweening (`_animate_movement`) prevents the camera from ever receiving an out-of-bounds position, avoiding scroll-vs-clamp frame fighting. When the viewport is larger than the map in a dimension (e.g. zoomed out very far), the camera is centred on the map centre for that axis.
