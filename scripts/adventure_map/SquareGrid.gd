@@ -5,8 +5,8 @@ class_name SquareGrid
 extends RefCounted
 
 
-## Tile size in pixels (matches the atlas tile size).
-const TILE_SIZE: int = 32
+## Tile size in pixels (matches the atlas tile size, 16×16).
+const TILE_SIZE: int = 16
 
 ## All 8 movement directions: cardinal + diagonal.
 ## Cardinal directions listed first so straight-line paths are preferred

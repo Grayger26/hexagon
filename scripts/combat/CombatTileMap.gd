@@ -1,6 +1,6 @@
 ## CombatTileMap.gd
 ## Three TileMapLayer children on a Node2D parent.
-## PNG atlas is 96×64 (3 cols × 2 rows, 32×32 per tile):
+## PNG atlas is 96×64 (6 cols × 4 rows, 16×16 per tile):
 ##   (0,0) green           — grass terrain
 ##   (1,0) orange          — unused (kept for future use)
 ##   (2,0) semi-transparent— movement range overlay  ← TILE_HL_MOVE
@@ -34,7 +34,7 @@ const TILE_CURSOR:          Vector2i = Vector2i(1, 1)   ## blue — hover glow
 const TILE_CURSOR_CHOSEN:   Vector2i = Vector2i(0, 1)   ## red  — chosen attack hex (clearly distinct from ghost positions)
 
 const TILE_TEXTURE_PATH: String = "res://assets/tilemaps/hex_tiles.png"
-const TILE_SIZE: int = 32
+const TILE_SIZE: int = 16
 
 
 # ── LAYERS ────────────────────────────────────────────────────────────────────

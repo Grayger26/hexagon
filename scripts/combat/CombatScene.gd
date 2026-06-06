@@ -162,8 +162,8 @@ func _ready() -> void:
 func _setup_camera() -> void:
 	## Create a camera that centres the battlefield on screen.
 	## The CombatTileMap sits at offset (8, 110) with scale 2.5×.
-	## The hex grid is 11 × 17 tiles of 32 px each — centre is around
-	## (8 + 11*32*2.5/2 ≈ 448, 110 + 17*32*2.5/2 ≈ 790).
+	## The hex grid is 11 × 17 tiles of 16 px each — centre is around
+	## (8 + 11*16*2.5/2 ≈ 228, 110 + 17*16*2.5/2 ≈ 450).
 	## We nudge the Y upward a bit so the UI bar at the top doesn't clip the field.
 	var cam := Camera2D.new()
 	cam.name = "Camera2D"

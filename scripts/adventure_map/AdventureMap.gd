@@ -11,7 +11,7 @@ extends Node2D
 const MAP_COLS: int = 160
 const MAP_ROWS: int = 110
 
-## Node scale (2x makes 32px tiles render as 64px on screen).
+## Node scale (2x makes 16px tiles render as 32px on screen).
 const MAP_SCALE: float = 2.0
 
 ## Player starting tile (roughly center of the map).
@@ -33,17 +33,17 @@ const MAP_ROADS_SCENE_PATH: String = "res://scenes/tilemaps/map_roads.tscn"
 const BUILDINGS_PATH: String = "res://assets/buildings/vault.png"
 const LIGHTHOUSE_PATH: String = "res://assets/buildings/lighthouse.png"
 
-# Building sprite sheet dimensions (vault.png = 160x96 = 5x3 tiles at 32px).
+# Building sprite sheet dimensions (vault.png = 80x48 = 5x3 tiles at 16px).
 const BUILDING_TILES_W: int = 5
 const BUILDING_TILES_H: int = 3
 const BUILDING_COUNT: int = 5
 
-# Lighthouse dimensions (lighthouse.png = 96x96 = 3x3 tiles at 32px).
+# Lighthouse dimensions (lighthouse.png = 48x48 = 3x3 tiles at 16px).
 const LIGHTHOUSE_TILES_W: int = 3
 const LIGHTHOUSE_TILES_H: int = 3
 
 # ── SQUARE TILES ATLAS ───────────────────────────────────────────────────────────
-# square_tiles.png is 96x96, 9 tiles in a 3x3 grid, each 32x32.
+# square_tiles.png is 48x48, 9 tiles in a 3x3 grid, each 16x16.
 # All 9 tiles are ground variations (no obstacle tile — obstacles use blocked_tiles only).
 
 const SRC_SQUARE: int = 0
@@ -51,7 +51,7 @@ const SQUARE_ATLAS_COLS: int = 3
 const SQUARE_ATLAS_ROWS: int = 3
 
 # ── PATH ARROWS ATLAS COORDS ─────────────────────────────────────────────────────
-# path_arrows.png is 96x96, 9 arrows in a 3x3 grid, each 32x32.
+# path_arrows.png is 48x48, 9 arrows in a 3x3 grid, each 16x16.
 
 const SRC_ARROW: int = 0
 const SRC_BUILDING: int = 0
@@ -286,7 +286,7 @@ func _build_arrow_tileset() -> TileSet:
 
 func _build_building_tileset() -> TileSet:
 	## Create a TileSet for the building sprite sheet (vault.png).
-	## The atlas is 5 tiles wide x 3 tiles high, each tile 32x32.
+	## The atlas is 5 tiles wide x 3 tiles high, each tile 16x16.
 	## Returns null if the texture file is missing (buildings are skipped).
 	if not ResourceLoader.exists(BUILDINGS_PATH):
 		push_warning("[AdventureMap] vault.png not found — buildings disabled.")
@@ -313,7 +313,7 @@ func _build_building_tileset() -> TileSet:
 
 func _build_lighthouse_tileset() -> TileSet:
 	## Create a TileSet for the lighthouse sprite sheet (lighthouse.png).
-	## The atlas is 3 tiles wide x 3 tiles high, each tile 32x32.
+	## The atlas is 3 tiles wide x 3 tiles high, each tile 16x16.
 	## Returns null if the texture file is missing (lighthouse is skipped).
 	if not ResourceLoader.exists(LIGHTHOUSE_PATH):
 		push_warning("[AdventureMap] lighthouse.png not found — lighthouse disabled.")

@@ -2,7 +2,7 @@
 ## Cube coordinate hex grid — POINTY-TOP orientation.
 ##
 ## Pointy-top = pointy corners at top and bottom, flat edges on left/right sides.
-## This matches the 32×32 PNG tiles in assets/tilemaps/hex_tiles.png.
+## This matches the 16×16 PNG tiles in assets/tilemaps/hex_tiles.png.
 ##
 ## Offset layout used: ODD-R (odd rows shift right by half a tile).
 ## Matches Godot TileSet: TILE_LAYOUT_STAIRS_RIGHT + TILE_OFFSET_AXIS_VERTICAL.
@@ -20,17 +20,17 @@ extends RefCounted
 const COLS: int = 17
 const ROWS: int = 11
 
-## Pixel size of one tile in the atlas PNG.
-const TILE_W: int = 32
-const TILE_H: int = 32
+## Pixel size of one tile in the atlas PNG (16×16 tiles).
+const TILE_W: int = 16
+const TILE_H: int = 16
 
 ## Pointy-top hex spacing for Godot STAIRS_RIGHT + VERTICAL axis:
 ##   columns advance by full tile width (no horizontal overlap)
 ##   rows    advance by tile_height × 0.75 (rows overlap by 25%)
 ##   odd rows shift right by tile_width / 2
-const HEX_COL_STEP: float = float(TILE_W)          ## 32  — horizontal step per column
-const HEX_ROW_STEP: float = float(TILE_H) * 0.75   ## 24  — vertical step per row
-const HEX_STAGGER:  float = float(TILE_W) * 0.5    ## 16  — odd-row rightward offset
+const HEX_COL_STEP: float = float(TILE_W)          ## 16  — horizontal step per column
+const HEX_ROW_STEP: float = float(TILE_H) * 0.75   ## 12  — vertical step per row
+const HEX_STAGGER:  float = float(TILE_W) * 0.5    ## 8  — odd-row rightward offset
 
 ## Legacy aliases kept so callers compile without changes.
 const HEX_W:    float = float(TILE_W)

@@ -237,14 +237,14 @@ func set_selected(selected: bool) -> void:
 # ─────────────────────────────────────────────
 
 func _build_visuals() -> void:
-	# Sprite — fills the 32×32 tile exactly, no background box.
+	# Sprite — 32×32 pixels (2×2 tiles at 16×16 tile size), no background box.
 	# Centred on the node origin (Sprite2D default is centred).
 	_sprite = Sprite2D.new()
 	_sprite.scale = Vector2(1.0, 1.0)
 	add_child(_sprite)
 
 	# Small count badge — dark pill at bottom-right, showing stack size.
-	# Sized in tile-local coords (tile = 32px), small enough not to obscure the sprite.
+	# Sized relative to the 32×32 sprite, small enough not to obscure the sprite.
 	var badge_bg := ColorRect.new()
 	badge_bg.size     = Vector2(14, 10)
 	badge_bg.position = Vector2(4, 7)

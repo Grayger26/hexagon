@@ -2,7 +2,7 @@
 
 **Engine:** Godot 4.6.2
 **Genre:** HoMM3-inspired turn-based strategy roguelike
-**Last updated:** 2026-06-06 (session 7)
+**Last updated:** 2026-06-06 (session 8)
 
 ---
 
@@ -89,8 +89,7 @@ Spells, hero integration, war machines, siege, special abilities, advanced AI �
 
 ## Key Architecture Decisions
 
-- **Square tiles 3x3 atlas** — `square_tiles.png` is 96x96 (3x3 tiles, 32x32 each). All 9 tiles are ground variations; obstacle tiles removed from the atlas. Obstacles still block pathfinding but keep whatever ground tile was placed.
-- **Seeded ground variation** — Ground tile selection uses `_get_map_seed() ^ 0xDEAD` for deterministic per-run terrain patterns.
+- **16×16 tile sprite resolution** — All tile atlases (`square_tiles.png` = 48×48, `path_arrows.png` = 48×48, `hex_tiles.png` = 96×64, `map_roads.png` = 128×192), building sprites (`lighthouse.png` = 48×48, `vault.png` = 80×48), and roads use 16×16 tile grids. `SquareGrid.TILE_SIZE`, `HexGrid.TILE_W/H`, and `CombatTileMap.TILE_SIZE` are all set to 16. Tile rendering uses `MAP_SCALE = 2.0` (adventure map) or per-scene scale (combat scale 2.5) for display. **Corrected from 32→16 in session 8** to match actual sprite pixel dimensions.
 - **Map size 10x area** — MAP_COLS 50→160, MAP_ROWS 35→110 (sqrt(10) scaling). Constants scaled proportionally (obstacles: 80→800, movement 1500→4500).
 - **Procedural enemy placement** — Enemies are no longer hardcoded in `GameState.init_default_run_data()`. `_place_enemies()` runs after building placement (avoids footprints), before obstacle placement (obstacles avoid enemies). Uses `_get_map_seed() ^ 0xCAFE` for deterministic placement. Target count = map area / 700, clamped 5–80 (~25 for current map).
 - **Army HUD via `_format_army_string()`** — Merges duplicate unit stacks, resolves display names from `DataManager.get_unit()`, shows total count. `Resource.get()` takes one argument (unlike Dictionary's two-argument version).
